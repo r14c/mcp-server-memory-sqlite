@@ -1,6 +1,8 @@
 # Knowledge Graph Memory Server
 A basic MCP server implementation that provides persistent memory using a knowledge-graph. The server manages entities, their observations, and the relationships between them using a JSON-based file system.
 
+This lets Claude remember information about the user across chats and projects, and lets them bypass the issues of having super long chats
+
 # Core Concepts
 
 ## Entities
