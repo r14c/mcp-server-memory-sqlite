@@ -1,5 +1,5 @@
 # Knowledge Graph Memory Server
-A basic MCP server implementation that provides persistent memory using a knowledge-graph. The server manages entities, their observations, and the relationships between them using a JSON-based file system.
+A basic MCP server implementation that provides persistent memory using a knowledge graph. The server manages entities, their observations, and the relationships between them using a JSON-based file system.
 
 This lets Claude remember information about the user across chats and projects, and lets them bypass the issues of having super long chats
 
@@ -16,16 +16,17 @@ Example:
 {
   "name": "John_Smith",
   "entityType": "person",
-  "observations": ["Lives in New York", "Works as a software engineer"]
+  "observations": ["Speaks fluent Spanish"]
 }
 ```
 
 ## Relations
 Relations define directed connections between entities. They are always stored in active voice and describe how entities interact or relate to each other.
 Example:
-```jsonCopy{
+```json
+{
   "from": "John_Smith",
-  "to": "TechCorp",
+  "to": "Anthropic",
   "relationType": "works_at"
 }
 ```
@@ -38,7 +39,8 @@ Observations are discrete pieces of information about an entity. They are:
 - Should be atomic (one fact per observation)
 
 Example:
-```jsonCopy{
+```json
+{
   "entityName": "John_Smith",
   "observations": [
     "Speaks fluent Spanish",
@@ -70,9 +72,9 @@ Example:
 - search_nodes: Search for nodes based on names, types, and observation content
 - open_nodes: Access specific nodes by their names
 
-# Prompts
+# Prompt
 
-The prompt for utilizing memory depends on the use case, but here is an example prompt for chat personalization. You could use this prompt in the "Custom Instructions" field of a Project
+The prompt for utilizing memory depends on the use case, but here is an example prompt for chat personalization. You could use this prompt in the "Custom Instructions" field of a Project. Changing this prompt will help the model determine the frequency and types of memories created.
 
 ```
 Follow these steps for each interaction:
@@ -95,7 +97,7 @@ Follow these steps for each interaction:
 
 4. Memory Update:
    - If any new information was gathered during the interaction, update your memory as follows:
-     a) Create nodes for recurring organizations, people, and significant events, connecting them to the current node.
+     a) Create entities for recurring organizations, people, and significant events, connecting them to the current node using relations
      b) Store most facts as observations within these nodes
    - Try to perform all updates in one operation using the create and delete functions.
 ```
