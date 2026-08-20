@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { promises as fs } from 'fs';
 import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
@@ -328,6 +328,135 @@ describe('KnowledgeGraphManager', () => {
       const result = await manager.searchNodes('NonExistent');
       expect(result.entities).toHaveLength(0);
       expect(result.relations).toHaveLength(0);
+    });
+  });
+
+  describe('search index', () => {
+    it('keeps the FTS index in sync with mutations', async () => {
+      await manager.createEntities([
+        { name: 'Delta', entityType: 'person', observations: ['flies delta airlines'] },
+      ]);
+      expect((await manager.searchNodes('delta')).entities.map(e => e.name)).toEqual(['Delta']);
+
+      // New observation on an existing entity becomes searchable
+      await manager.addObservations([{ entityName: 'Delta', contents: ['likes sqlite'] }]);
+      expect((await manager.searchNodes('sqlite')).entities.map(e => e.name)).toEqual(['Delta']);
+
+      // Deleted observation stops matching
+      await manager.deleteObservations([{ entityName: 'Delta', observations: ['likes sqlite'] }]);
+      expect((await manager.searchNodes('sqlite')).entities).toHaveLength(0);
+
+      // Deleted entity (cascading its observations) stops matching
+      await manager.deleteEntities(['Delta']);
+      expect((await manager.searchNodes('Delta')).entities).toHaveLength(0);
+    });
+
+    it('matches entity types and names that only appear in the index, not the data', async () => {
+      await manager.createEntities([
+        { name: 'Echo', entityType: 'server', observations: [] },
+      ]);
+      // entityType match via the entity row (content '')
+      expect((await manager.searchNodes('serv')).entities.map(e => e.name)).toEqual(['Echo']);
+    });
+
+    it('does not duplicate search index rows on reopen (one-time backfill)', async () => {
+      await manager.createEntities([
+        { name: 'Foxtrot', entityType: 'person', observations: ['first', 'second'] },
+      ]);
+
+      // Reopen the same database: backfill must not run again
+      const manager2 = new KnowledgeGraphManager(testFilePath);
+      const db = new DatabaseSync(testFilePath, { readOnly: true });
+      // 1 entity row (content '') + 2 observation rows
+      expect(db.prepare('SELECT count(*) c FROM search_index').get().c).toBe(3);
+      db.close();
+
+      expect((await manager2.searchNodes('second')).entities.map(e => e.name)).toEqual(['Foxtrot']);
+      manager2.close();
+    });
+
+    it('populates the search index from a legacy JSONL import', async () => {
+      const base = path.join(path.dirname(fileURLToPath(import.meta.url)), `test-legacy-search-${Date.now()}`);
+      const jsonlPath = `${base}.jsonl`;
+      const dbPath = `${base}.db`;
+
+      await fs.writeFile(jsonlPath, [
+        JSON.stringify({ type: 'entity', name: 'Golf', entityType: 'person', observations: ['plays golf'] }),
+      ].join('\n'));
+
+      const importManager = new KnowledgeGraphManager(dbPath);
+      const result = await importManager.searchNodes('golf');
+      expect(result.entities.map(e => e.name)).toEqual(['Golf']);
+
+      importManager.close();
+      await fs.unlink(dbPath);
+      await fs.unlink(jsonlPath);
+    });
+
+    it('uses the FTS index fast path (no LIKE fallback on normal queries)', async () => {
+      await manager.createEntities([
+        { name: 'Alice', entityType: 'person', observations: ['works at Acme Corp'] },
+      ]);
+      // The LIKE fallback logs an error to stderr when the FTS path fails, so
+      // a clean search proves the MATCH query actually ran.
+      const spy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      try {
+        const result = await manager.searchNodes('alice');
+        expect(result.entities.map(e => e.name)).toEqual(['Alice']);
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('falls back to LIKE for queries shorter than 3 characters', async () => {
+      await manager.createEntities([
+        { name: 'Alice', entityType: 'person', observations: [] },
+      ]);
+      // Two characters is below the trigram minimum, so the LIKE path runs.
+      const result = await manager.searchNodes('al');
+      expect(result.entities.map(e => e.name)).toEqual(['Alice']);
+    });
+
+    it('keeps an entity searchable by type when an empty observation is deleted', async () => {
+      await manager.createEntities([
+        { name: 'Hotel', entityType: 'lodging', observations: [''] },
+      ]);
+      expect((await manager.searchNodes('lodg')).entities.map(e => e.name)).toEqual(['Hotel']);
+
+      await manager.deleteObservations([{ entityName: 'Hotel', observations: [''] }]);
+      // The entity discriminator row (kind='entity') must survive the
+      // observation-row delete; without the kind column this over-deletes.
+      expect((await manager.searchNodes('lodg')).entities.map(e => e.name)).toEqual(['Hotel']);
+      expect((await manager.searchNodes('Hotel')).entities.map(e => e.name)).toEqual(['Hotel']);
+    });
+
+    it('backfills the search index when opening a pre-search-index database', async () => {
+      const oldPath = path.join(path.dirname(fileURLToPath(import.meta.url)), `test-old-schema-${Date.now()}.db`);
+      // Build an old-style database: same tables and data, but no search_index
+      // and user_version 0 (as produced by the pre-index version of this code).
+      const db = new DatabaseSync(oldPath);
+      db.exec(`
+        CREATE TABLE entities (name TEXT PRIMARY KEY, entityType TEXT NOT NULL);
+        CREATE TABLE observations (entityName TEXT NOT NULL REFERENCES entities(name) ON DELETE CASCADE, content TEXT NOT NULL, PRIMARY KEY (entityName, content));
+        CREATE TABLE relations ("from" TEXT NOT NULL, "to" TEXT NOT NULL, relationType TEXT NOT NULL, PRIMARY KEY ("from", "to", relationType));
+        INSERT INTO entities VALUES ('Alice','person'),('Acme Corp','company');
+        INSERT INTO observations VALUES ('Alice','works at Acme Corp'),('Alice','likes programming'),('Acme Corp','tech company');
+        INSERT INTO relations VALUES ('Alice','Acme Corp','works_at');
+      `);
+      db.close();
+
+      const reopened = new KnowledgeGraphManager(oldPath);
+      const result = await reopened.searchNodes('programming');
+      expect(result.entities.map(e => e.name)).toEqual(['Alice']);
+      reopened.close();
+
+      const db2 = new DatabaseSync(oldPath, { readOnly: true });
+      expect(db2.prepare('PRAGMA user_version').get().user_version).toBe(1);
+      // 2 entity rows + 3 observation rows
+      expect(db2.prepare('SELECT count(*) c FROM search_index').get().c).toBe(5);
+      db2.close();
+      await fs.unlink(oldPath);
     });
   });
 

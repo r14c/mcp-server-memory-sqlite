@@ -85,10 +85,51 @@ export class KnowledgeGraphManager {
         relationType TEXT NOT NULL,
         PRIMARY KEY ("from", "to", relationType)
       );
-      CREATE INDEX IF NOT EXISTS idx_observations_entityName ON observations(entityName);
-      CREATE INDEX IF NOT EXISTS idx_relations_from ON relations("from");
+      -- The observations PK (entityName, content) already covers entityName
+      -- lookups and the relations PK ("from", "to", relationType) already
+      -- covers "from" lookups, so the standalone indexes on those columns are
+      -- redundant write overhead; only the "to" index adds a new lookup path.
+      DROP INDEX IF EXISTS idx_observations_entityName;
+      DROP INDEX IF EXISTS idx_relations_from;
       CREATE INDEX IF NOT EXISTS idx_relations_to ON relations("to");
+
+      -- FTS5 trigram search index over entity names, entity types, and
+      -- observation content, kept in sync by the triggers below. The trigram
+      -- tokenizer gives literal substring matching (the old LIKE '%q%'
+      -- semantics) at index speed. Two kinds of rows, disambiguated by the
+      -- unindexed kind column (stored, never matched):
+      --   kind='entity'      one row per entity, content ''
+      --   kind='observation' one row per observation
+      CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
+        name,
+        entityType,
+        content,
+        kind UNINDEXED,
+        tokenize = 'trigram'
+      );
+      CREATE TRIGGER IF NOT EXISTS search_index_entities_ai AFTER INSERT ON entities BEGIN
+        INSERT INTO search_index (name, entityType, content, kind) VALUES (new.name, new.entityType, '', 'entity');
+      END;
+      CREATE TRIGGER IF NOT EXISTS search_index_entities_ad AFTER DELETE ON entities BEGIN
+        DELETE FROM search_index WHERE name = old.name;
+      END;
+      CREATE TRIGGER IF NOT EXISTS search_index_entities_au AFTER UPDATE OF name, entityType ON entities BEGIN
+        UPDATE search_index SET name = new.name, entityType = new.entityType WHERE name = old.name AND kind = 'entity';
+      END;
+      CREATE TRIGGER IF NOT EXISTS search_index_observations_ai AFTER INSERT ON observations BEGIN
+        INSERT INTO search_index (name, entityType, content, kind) VALUES (new.entityName, '', new.content, 'observation');
+      END;
+      CREATE TRIGGER IF NOT EXISTS search_index_observations_ad AFTER DELETE ON observations BEGIN
+        DELETE FROM search_index WHERE name = old.entityName AND content = old.content AND kind = 'observation';
+      END;
+      CREATE TRIGGER IF NOT EXISTS search_index_observations_au AFTER UPDATE OF entityName, content ON observations BEGIN
+        UPDATE search_index SET name = new.entityName, content = new.content
+        WHERE name = old.entityName AND content = old.content AND kind = 'observation';
+      END;
     `);
+    // One-time backfill of the search index for databases created before it
+    // existed; later writes are mirrored into the index by the triggers above.
+    this.backfillSearchIndex();
     if (!dbExisted) {
       this.importLegacyJsonl();
     }
@@ -157,6 +198,24 @@ export class KnowledgeGraphManager {
       console.error(`MIGRATED: imported ${entities} entities and ${relations} relations from legacy JSONL file ${legacyPath} into SQLite database ${this.memoryFilePath}`);
       return;
     }
+  }
+
+  // One-time backfill of the FTS5 search index for databases that predate it.
+  // Guarded by PRAGMA user_version so it runs only once per database; the
+  // marker is set in the same transaction as the backfill, so a crash leaves
+  // the database clean for a retry on the next open.
+  private backfillSearchIndex(): void {
+    const { user_version } = this.db.prepare('PRAGMA user_version').get() as { user_version: number };
+    if (user_version >= 1) return;
+    this.transaction(() => {
+      this.db.exec(`
+        INSERT INTO search_index (name, entityType, content, kind)
+          SELECT e.name, e.entityType, '', 'entity' FROM entities e;
+        INSERT INTO search_index (name, entityType, content, kind)
+          SELECT o.entityName, '', o.content, 'observation' FROM observations o;
+      `);
+      this.db.exec('PRAGMA user_version = 1');
+    });
   }
 
   private loadEntities(names?: string[]): Entity[] {
@@ -305,18 +364,56 @@ export class KnowledgeGraphManager {
     };
   }
 
-  // Very basic search function
+  // Search entity names, entity types, and observation content. The fast path
+  // queries the FTS5 trigram index (literal substring match, case-insensitive,
+  // same semantics as the old LIKE scan but indexed); queries too short for
+  // the trigram tokenizer (< 3 characters) fall back to a LIKE scan.
   async searchNodes(query: string): Promise<KnowledgeGraph> {
+    const phrase = this.ftsPhrase(query);
+    let rows: { name: string }[];
+    if (phrase !== null) {
+      try {
+        rows = this.db.prepare(`
+          SELECT DISTINCT e.name
+          FROM entities e
+          JOIN search_index ON search_index.name = e.name
+          WHERE search_index MATCH ?
+          ORDER BY e.rowid
+        `).all(phrase) as { name: string }[];
+      } catch (error) {
+        console.error(`FTS search failed for query "${query}", falling back to LIKE scan:`, error);
+        rows = this.searchNodesLike(query);
+      }
+    } else {
+      rows = this.searchNodesLike(query);
+    }
+    return this.graphForEntityNames(rows.map(row => row.name));
+  }
+
+  // LIKE scan fallback (the original search implementation), used for queries
+  // the trigram tokenizer cannot handle. Note that FTS5 phrase queries are
+  // literal, so on the indexed path `%` and `_` in a query no longer act as
+  // wildcards as they did in the LIKE scan.
+  private searchNodesLike(query: string): { name: string }[] {
     const pattern = `%${query.toLowerCase()}%`;
-    const rows = this.db.prepare(`
+    return this.db.prepare(`
       SELECT DISTINCT e.name
       FROM entities e
       LEFT JOIN observations o ON o.entityName = e.name
       WHERE LOWER(e.name) LIKE ? OR LOWER(e.entityType) LIKE ? OR LOWER(o.content) LIKE ?
       ORDER BY e.rowid
     `).all(pattern, pattern, pattern) as { name: string }[];
+  }
 
-    return this.graphForEntityNames(rows.map(row => row.name));
+  // Wrap a raw query as an FTS5 phrase for literal substring matching, so FTS5
+  // operators in the query cannot change the semantics (a double quote inside
+  // the query is escaped by doubling; every other character is literal inside
+  // a phrase). Returns null when the query is too short for the trigram
+  // tokenizer (needs at least 3 characters), counting code points rather than
+  // UTF-16 code units so two astral characters (e.g. emoji) fall back.
+  private ftsPhrase(query: string): string | null {
+    if ([...query].length < 3) return null;
+    return `"${query.replaceAll('"', '""')}"`;
   }
 
   async openNodes(names: string[]): Promise<KnowledgeGraph> {
