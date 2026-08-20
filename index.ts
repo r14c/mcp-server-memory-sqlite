@@ -4,44 +4,36 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { SubscribeRequestSchema, UnsubscribeRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
-import { promises as fs } from 'fs';
+import { DatabaseSync } from 'node:sqlite';
+import { mkdirSync, existsSync, readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
-// Define memory file path using environment variable with fallback
-export const defaultMemoryPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'memory.jsonl');
+const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
-// Handle backward compatibility: migrate memory.json to memory.jsonl if needed
+// SQLite database file used for persistent storage.
+export const defaultMemoryPath = path.join(moduleDir, 'memory.db');
+
+// Resolve the SQLite database path. MEMORY_FILE_PATH may still point at a
+// legacy JSONL document from earlier versions; in that case we redirect the
+// database to a sibling .db file and import the JSONL contents on first open.
 export async function ensureMemoryFilePath(): Promise<string> {
+  let resolved: string;
   if (process.env.MEMORY_FILE_PATH) {
     // Custom path provided, use it as-is (with absolute path resolution)
-    return path.isAbsolute(process.env.MEMORY_FILE_PATH)
+    resolved = path.isAbsolute(process.env.MEMORY_FILE_PATH)
       ? process.env.MEMORY_FILE_PATH
-      : path.join(path.dirname(fileURLToPath(import.meta.url)), process.env.MEMORY_FILE_PATH);
+      : path.join(moduleDir, process.env.MEMORY_FILE_PATH);
+  } else {
+    resolved = defaultMemoryPath;
   }
-  
-  // No custom path set, check for backward compatibility migration
-  const oldMemoryPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'memory.json');
-  const newMemoryPath = defaultMemoryPath;
-  
-  try {
-    // Check if old file exists and new file doesn't
-    await fs.access(oldMemoryPath);
-    try {
-      await fs.access(newMemoryPath);
-      // Both files exist, use new one (no migration needed)
-      return newMemoryPath;
-    } catch {
-      // Old file exists, new file doesn't - migrate
-      console.error('DETECTED: Found legacy memory.json file, migrating to memory.jsonl for JSONL format compatibility');
-      await fs.rename(oldMemoryPath, newMemoryPath);
-      console.error('COMPLETED: Successfully migrated memory.json to memory.jsonl');
-      return newMemoryPath;
-    }
-  } catch {
-    // Old file doesn't exist, use new path
-    return newMemoryPath;
+
+  if (/\.jsonl?$/i.test(resolved)) {
+    const dbPath = resolved.replace(/\.jsonl?$/i, '.db');
+    console.error(`DETECTED: ${resolved} is a legacy JSONL memory file; the SQLite database will be created at ${dbPath} and the JSONL contents imported on first start`);
+    return dbPath;
   }
+  return resolved;
 }
 
 // Initialize memory file path (will be set during startup)
@@ -65,176 +57,270 @@ export interface KnowledgeGraph {
   relations: Relation[];
 }
 
-// The KnowledgeGraphManager class contains all operations to interact with the knowledge graph
+// The KnowledgeGraphManager class contains all operations to interact with the
+// knowledge graph, backed by a SQLite database (node:sqlite, built into
+// Node.js >= 22.13). Mutations run inside transactions so the graph is never
+// left half-written.
 export class KnowledgeGraphManager {
-  constructor(private memoryFilePath: string) {}
+  private db: DatabaseSync;
 
-  private async loadGraph(): Promise<KnowledgeGraph> {
+  constructor(private memoryFilePath: string) {
+    mkdirSync(path.dirname(this.memoryFilePath), { recursive: true });
+    const dbExisted = existsSync(this.memoryFilePath);
+    this.db = new DatabaseSync(this.memoryFilePath);
+    this.db.exec(`
+      PRAGMA foreign_keys = ON;
+      CREATE TABLE IF NOT EXISTS entities (
+        name TEXT PRIMARY KEY,
+        entityType TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS observations (
+        entityName TEXT NOT NULL REFERENCES entities(name) ON DELETE CASCADE,
+        content TEXT NOT NULL,
+        PRIMARY KEY (entityName, content)
+      );
+      CREATE TABLE IF NOT EXISTS relations (
+        "from" TEXT NOT NULL,
+        "to" TEXT NOT NULL,
+        relationType TEXT NOT NULL,
+        PRIMARY KEY ("from", "to", relationType)
+      );
+      CREATE INDEX IF NOT EXISTS idx_observations_entityName ON observations(entityName);
+      CREATE INDEX IF NOT EXISTS idx_relations_from ON relations("from");
+      CREATE INDEX IF NOT EXISTS idx_relations_to ON relations("to");
+    `);
+    if (!dbExisted) {
+      this.importLegacyJsonl();
+    }
+  }
+
+  close(): void {
+    this.db.close();
+  }
+
+  private transaction<T>(fn: () => T): T {
+    this.db.exec('BEGIN');
     try {
-      const data = await fs.readFile(this.memoryFilePath, "utf-8");
-      const lines = data.split("\n").filter(line => line.trim() !== "");
-      return lines.reduce((graph: KnowledgeGraph, line) => {
-        const item = JSON.parse(line);
-        if (item.type === "entity") {
-          graph.entities.push({
-            name: item.name,
-            entityType: item.entityType,
-            observations: item.observations
-          });
-        }
-        if (item.type === "relation") {
-          graph.relations.push({
-            from: item.from,
-            to: item.to,
-            relationType: item.relationType
-          });
-        }
-        return graph;
-      }, { entities: [], relations: [] });
+      const result = fn();
+      this.db.exec('COMMIT');
+      return result;
     } catch (error) {
-      if (error instanceof Error && 'code' in error && (error as any).code === "ENOENT") {
-        return { entities: [], relations: [] };
-      }
+      this.db.exec('ROLLBACK');
       throw error;
     }
   }
 
-  private async saveGraph(graph: KnowledgeGraph): Promise<void> {
-    const lines = [
-      ...graph.entities.map(e => JSON.stringify({
-        type: "entity",
-        name: e.name,
-        entityType: e.entityType,
-        observations: e.observations
-      })),
-      ...graph.relations.map(r => JSON.stringify({
-        type: "relation",
-        from: r.from,
-        to: r.to,
-        relationType: r.relationType
-      })),
-    ];
-    await fs.writeFile(this.memoryFilePath, lines.join("\n"));
+  // Import legacy JSONL data (memory.jsonl / memory.json) into the database.
+  // Only called when the database file did not exist yet, so existing SQLite
+  // data is never touched. The legacy file is left in place as a backup.
+  private importLegacyJsonl(): void {
+    const ext = path.extname(this.memoryFilePath);
+    const base = this.memoryFilePath.slice(0, this.memoryFilePath.length - ext.length);
+    const candidates = [`${base}.jsonl`, `${base}.json`];
+
+    for (const legacyPath of candidates) {
+      let content: string;
+      try {
+        content = readFileSync(legacyPath, 'utf-8');
+      } catch {
+        continue; // no legacy file at this path
+      }
+      const lines = content.split('\n').filter(line => line.trim() !== '');
+      if (lines.length === 0) continue;
+
+      const insertEntity = this.db.prepare('INSERT OR IGNORE INTO entities (name, entityType) VALUES (?, ?)');
+      const insertObservation = this.db.prepare('INSERT OR IGNORE INTO observations (entityName, content) VALUES (?, ?)');
+      const insertRelation = this.db.prepare('INSERT OR IGNORE INTO relations ("from", "to", relationType) VALUES (?, ?, ?)');
+
+      let entities = 0;
+      let relations = 0;
+      this.db.exec('BEGIN');
+      try {
+        for (const line of lines) {
+          const item = JSON.parse(line);
+          if (item.type === 'entity') {
+            insertEntity.run(item.name, item.entityType);
+            for (const observation of item.observations ?? []) {
+              insertObservation.run(item.name, observation);
+            }
+            entities++;
+          } else if (item.type === 'relation') {
+            insertRelation.run(item.from, item.to, item.relationType);
+            relations++;
+          }
+        }
+        this.db.exec('COMMIT');
+      } catch (error) {
+        this.db.exec('ROLLBACK');
+        throw error;
+      }
+      console.error(`MIGRATED: imported ${entities} entities and ${relations} relations from legacy JSONL file ${legacyPath} into SQLite database ${this.memoryFilePath}`);
+      return;
+    }
+  }
+
+  private loadEntities(names?: string[]): Entity[] {
+    const list = names ?? [];
+    if (names !== undefined && list.length === 0) return [];
+    const whereClause = list.length > 0
+      ? ` WHERE name IN (${list.map(() => '?').join(',')})`
+      : '';
+    const entityRows = this.db.prepare(
+      `SELECT name, entityType FROM entities${whereClause} ORDER BY rowid`
+    ).all(...list) as { name: string; entityType: string }[];
+
+    const observationWhere = list.length > 0
+      ? ` WHERE entityName IN (${list.map(() => '?').join(',')})`
+      : '';
+    const observationRows = this.db.prepare(
+      `SELECT entityName, content FROM observations${observationWhere} ORDER BY rowid`
+    ).all(...list) as { entityName: string; content: string }[];
+
+    const observationsByEntity = new Map<string, string[]>();
+    for (const row of observationRows) {
+      const observations = observationsByEntity.get(row.entityName) ?? [];
+      observations.push(row.content);
+      observationsByEntity.set(row.entityName, observations);
+    }
+
+    return entityRows.map(row => ({
+      name: row.name,
+      entityType: row.entityType,
+      observations: observationsByEntity.get(row.name) ?? [],
+    }));
+  }
+
+  private loadRelations(names?: string[]): Relation[] {
+    const list = names ?? [];
+    if (names !== undefined && list.length === 0) return [];
+    const whereClause = list.length > 0
+      ? ` WHERE "from" IN (${list.map(() => '?').join(',')}) OR "to" IN (${list.map(() => '?').join(',')})`
+      : '';
+    const params = list.length > 0 ? [...list, ...list] : [];
+    const rows = this.db.prepare(
+      `SELECT "from", "to", relationType FROM relations${whereClause} ORDER BY rowid`
+    ).all(...params);
+    return rows.map(row => ({
+      from: String(row.from),
+      to: String(row.to),
+      relationType: String(row.relationType),
+    }));
+  }
+
+  private graphForEntityNames(names: string[]): KnowledgeGraph {
+    if (names.length === 0) {
+      return { entities: [], relations: [] };
+    }
+    return {
+      entities: this.loadEntities(names),
+      relations: this.loadRelations(names),
+    };
   }
 
   async createEntities(entities: Entity[]): Promise<Entity[]> {
-    const graph = await this.loadGraph();
-    const newEntities = entities.filter(e => !graph.entities.some(existingEntity => existingEntity.name === e.name));
-    graph.entities.push(...newEntities);
-    await this.saveGraph(graph);
-    return newEntities;
+    const insertEntity = this.db.prepare('INSERT OR IGNORE INTO entities (name, entityType) VALUES (?, ?)');
+    const insertObservation = this.db.prepare('INSERT OR IGNORE INTO observations (entityName, content) VALUES (?, ?)');
+    return this.transaction(() => {
+      const newEntities: Entity[] = [];
+      for (const entity of entities) {
+        if (insertEntity.run(entity.name, entity.entityType).changes > 0) {
+          for (const observation of entity.observations) {
+            insertObservation.run(entity.name, observation);
+          }
+          newEntities.push(entity);
+        }
+      }
+      return newEntities;
+    });
   }
 
   async createRelations(relations: Relation[]): Promise<Relation[]> {
-    const graph = await this.loadGraph();
-    const newRelations = relations.filter(r => !graph.relations.some(existingRelation => 
-      existingRelation.from === r.from && 
-      existingRelation.to === r.to && 
-      existingRelation.relationType === r.relationType
-    ));
-    graph.relations.push(...newRelations);
-    await this.saveGraph(graph);
-    return newRelations;
+    const insertRelation = this.db.prepare('INSERT OR IGNORE INTO relations ("from", "to", relationType) VALUES (?, ?, ?)');
+    return this.transaction(() => {
+      const newRelations: Relation[] = [];
+      for (const relation of relations) {
+        if (insertRelation.run(relation.from, relation.to, relation.relationType).changes > 0) {
+          newRelations.push(relation);
+        }
+      }
+      return newRelations;
+    });
   }
 
   async addObservations(observations: { entityName: string; contents: string[] }[]): Promise<{ entityName: string; addedObservations: string[] }[]> {
-    const graph = await this.loadGraph();
-    const results = observations.map(o => {
-      const entity = graph.entities.find(e => e.name === o.entityName);
-      if (!entity) {
-        throw new Error(`Entity with name ${o.entityName} not found`);
-      }
-      const newObservations = o.contents.filter(content => !entity.observations.includes(content));
-      entity.observations.push(...newObservations);
-      return { entityName: o.entityName, addedObservations: newObservations };
+    const findEntity = this.db.prepare('SELECT name FROM entities WHERE name = ?');
+    const insertObservation = this.db.prepare('INSERT OR IGNORE INTO observations (entityName, content) VALUES (?, ?)');
+    return this.transaction(() => {
+      const results = observations.map(o => {
+        if (!findEntity.get(o.entityName)) {
+          throw new Error(`Entity with name ${o.entityName} not found`);
+        }
+        const addedObservations: string[] = [];
+        for (const content of o.contents) {
+          if (insertObservation.run(o.entityName, content).changes > 0) {
+            addedObservations.push(content);
+          }
+        }
+        return { entityName: o.entityName, addedObservations };
+      });
+      return results;
     });
-    await this.saveGraph(graph);
-    return results;
   }
 
   async deleteEntities(entityNames: string[]): Promise<void> {
-    const graph = await this.loadGraph();
-    graph.entities = graph.entities.filter(e => !entityNames.includes(e.name));
-    graph.relations = graph.relations.filter(r => !entityNames.includes(r.from) && !entityNames.includes(r.to));
-    await this.saveGraph(graph);
+    const deleteRelations = this.db.prepare('DELETE FROM relations WHERE "from" = ? OR "to" = ?');
+    const deleteEntity = this.db.prepare('DELETE FROM entities WHERE name = ?');
+    this.transaction(() => {
+      for (const name of entityNames) {
+        deleteRelations.run(name, name);
+        deleteEntity.run(name); // observations are removed by ON DELETE CASCADE
+      }
+    });
   }
 
   async deleteObservations(deletions: { entityName: string; observations: string[] }[]): Promise<void> {
-    const graph = await this.loadGraph();
-    deletions.forEach(d => {
-      const entity = graph.entities.find(e => e.name === d.entityName);
-      if (entity) {
-        entity.observations = entity.observations.filter(o => !d.observations.includes(o));
+    const deleteObservation = this.db.prepare('DELETE FROM observations WHERE entityName = ? AND content = ?');
+    this.transaction(() => {
+      for (const deletion of deletions) {
+        for (const observation of deletion.observations) {
+          deleteObservation.run(deletion.entityName, observation);
+        }
       }
     });
-    await this.saveGraph(graph);
   }
 
   async deleteRelations(relations: Relation[]): Promise<void> {
-    const graph = await this.loadGraph();
-    graph.relations = graph.relations.filter(r => !relations.some(delRelation => 
-      r.from === delRelation.from && 
-      r.to === delRelation.to && 
-      r.relationType === delRelation.relationType
-    ));
-    await this.saveGraph(graph);
+    const deleteRelation = this.db.prepare('DELETE FROM relations WHERE "from" = ? AND "to" = ? AND relationType = ?');
+    this.transaction(() => {
+      for (const relation of relations) {
+        deleteRelation.run(relation.from, relation.to, relation.relationType);
+      }
+    });
   }
 
   async readGraph(): Promise<KnowledgeGraph> {
-    return this.loadGraph();
+    return {
+      entities: this.loadEntities(),
+      relations: this.loadRelations(),
+    };
   }
 
   // Very basic search function
   async searchNodes(query: string): Promise<KnowledgeGraph> {
-    const graph = await this.loadGraph();
-    
-    // Filter entities
-    const filteredEntities = graph.entities.filter(e => 
-      e.name.toLowerCase().includes(query.toLowerCase()) ||
-      e.entityType.toLowerCase().includes(query.toLowerCase()) ||
-      e.observations.some(o => o.toLowerCase().includes(query.toLowerCase()))
-    );
-  
-    // Create a Set of filtered entity names for quick lookup
-    const filteredEntityNames = new Set(filteredEntities.map(e => e.name));
-  
-    // Include relations where at least one endpoint matches the search results.
-    // This lets callers discover connections to nodes outside the result set.
-    const filteredRelations = graph.relations.filter(r => 
-      filteredEntityNames.has(r.from) || filteredEntityNames.has(r.to)
-    );
-  
-    const filteredGraph: KnowledgeGraph = {
-      entities: filteredEntities,
-      relations: filteredRelations,
-    };
-  
-    return filteredGraph;
+    const pattern = `%${query.toLowerCase()}%`;
+    const rows = this.db.prepare(`
+      SELECT DISTINCT e.name
+      FROM entities e
+      LEFT JOIN observations o ON o.entityName = e.name
+      WHERE LOWER(e.name) LIKE ? OR LOWER(e.entityType) LIKE ? OR LOWER(o.content) LIKE ?
+      ORDER BY e.rowid
+    `).all(pattern, pattern, pattern) as { name: string }[];
+
+    return this.graphForEntityNames(rows.map(row => row.name));
   }
 
   async openNodes(names: string[]): Promise<KnowledgeGraph> {
-    const graph = await this.loadGraph();
-    
-    // Filter entities
-    const filteredEntities = graph.entities.filter(e => names.includes(e.name));
-  
-    // Create a Set of filtered entity names for quick lookup
-    const filteredEntityNames = new Set(filteredEntities.map(e => e.name));
-  
-    // Include relations where at least one endpoint is in the requested set.
-    // Previously this required BOTH endpoints, which meant relations from a
-    // requested node to an unrequested node were silently dropped — making it
-    // impossible to discover a node's connections without reading the full graph.
-    const filteredRelations = graph.relations.filter(r => 
-      filteredEntityNames.has(r.from) || filteredEntityNames.has(r.to)
-    );
-  
-    const filteredGraph: KnowledgeGraph = {
-      entities: filteredEntities,
-      relations: filteredRelations,
-    };
-  
-    return filteredGraph;
+    return this.graphForEntityNames(names);
   }
 }
 
@@ -256,7 +342,7 @@ const RelationSchema = z.object({
 // The server instance and tools exposed to Claude
 const server = new McpServer({
   name: "memory-server",
-  version: "0.6.3",
+  version: "0.7.0",
 });
 
 const RESOURCE_URI = "memory://knowledge-graph";

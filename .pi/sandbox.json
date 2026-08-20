@@ -1,0 +1,14 @@
+{
+  "filesystem": {
+    "allowWrite": [
+      ".",
+      "/tmp",
+      "~/.npm/_cacache/**"
+    ]
+  },
+  "network": {
+    "allowedDomains": [
+      "registry.npmjs.org"
+    ]
+  }
+}

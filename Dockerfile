@@ -1,4 +1,4 @@
-FROM node:22.12-alpine AS builder
+FROM node:22-alpine AS builder
 
 COPY src/memory /app
 COPY tsconfig.json /tsconfig.json

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { promises as fs } from 'fs';
+import { DatabaseSync } from 'node:sqlite';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { KnowledgeGraphManager, Entity, Relation, KnowledgeGraph } from '../index.js';
@@ -9,16 +10,21 @@ describe('KnowledgeGraphManager', () => {
   let testFilePath: string;
 
   beforeEach(async () => {
-    // Create a temporary test file path
+    // Create a temporary test database path
     testFilePath = path.join(
       path.dirname(fileURLToPath(import.meta.url)),
-      `test-memory-${Date.now()}.jsonl`
+      `test-memory-${Date.now()}.db`
     );
     manager = new KnowledgeGraphManager(testFilePath);
   });
 
   afterEach(async () => {
-    // Clean up test file
+    // Close the database and clean up the test file
+    try {
+      manager.close();
+    } catch (error) {
+      // Ignore errors if the manager was not created
+    }
     try {
       await fs.unlink(testFilePath);
     } catch (error) {
@@ -409,25 +415,32 @@ describe('KnowledgeGraphManager', () => {
       expect(graph.entities[0].name).toBe('Alice');
     });
 
-    it('should handle JSONL format correctly', async () => {
+    it('should store data in SQLite tables', async () => {
       await manager.createEntities([
-        { name: 'Alice', entityType: 'person', observations: [] },
+        { name: 'Alice', entityType: 'person', observations: ['works at Acme Corp'] },
       ]);
       await manager.createRelations([
         { from: 'Alice', to: 'Alice', relationType: 'self' },
       ]);
 
-      // Read file directly
-      const fileContent = await fs.readFile(testFilePath, 'utf-8');
-      const lines = fileContent.split('\n').filter(line => line.trim());
+      // Read the database directly
+      const db = new DatabaseSync(testFilePath, { readOnly: true });
+      const entities = db.prepare('SELECT * FROM entities').all();
+      const observations = db.prepare('SELECT * FROM observations').all();
+      const relations = db.prepare('SELECT * FROM relations').all();
+      db.close();
 
-      expect(lines).toHaveLength(2);
-      expect(JSON.parse(lines[0])).toHaveProperty('type', 'entity');
-      expect(JSON.parse(lines[1])).toHaveProperty('type', 'relation');
+      expect(entities).toHaveLength(1);
+      expect(entities[0]).toMatchObject({ name: 'Alice', entityType: 'person' });
+      expect(observations).toHaveLength(1);
+      expect(observations[0]).toMatchObject({ entityName: 'Alice', content: 'works at Acme Corp' });
+      expect(relations).toHaveLength(1);
+      expect(relations[0]).toMatchObject({ from: 'Alice', to: 'Alice', relationType: 'self' });
     });
 
     it('should strip type field from entities when loading from file', async () => {
-      // Create entities and relations (these get saved with type field)
+      // Create entities and relations. The old JSONL format stored a `type`
+      // field on disk; SQLite never does, so reloading must not leak it.
       await manager.createEntities([
         { name: 'Alice', entityType: 'person', observations: ['test observation'] },
         { name: 'Bob', entityType: 'person', observations: [] },
@@ -436,18 +449,7 @@ describe('KnowledgeGraphManager', () => {
         { from: 'Alice', to: 'Bob', relationType: 'knows' },
       ]);
 
-      // Verify file contains type field (order may vary)
-      const fileContent = await fs.readFile(testFilePath, 'utf-8');
-      const fileLines = fileContent.split('\n').filter(line => line.trim());
-      const fileItems = fileLines.map(line => JSON.parse(line));
-      const fileEntity = fileItems.find(item => item.type === 'entity');
-      const fileRelation = fileItems.find(item => item.type === 'relation');
-      expect(fileEntity).toBeDefined();
-      expect(fileEntity).toHaveProperty('type', 'entity');
-      expect(fileRelation).toBeDefined();
-      expect(fileRelation).toHaveProperty('type', 'relation');
-
-      // Create new manager instance to force reload from file
+      // Create new manager instance to force reload from the database
       const manager2 = new KnowledgeGraphManager(testFilePath);
       const graph = await manager2.readGraph();
 
@@ -513,6 +515,99 @@ describe('KnowledgeGraphManager', () => {
 
       expect(result.relations).toHaveLength(1);
       expect(result.relations[0]).not.toHaveProperty('type');
+    });
+  });
+
+  describe('legacy JSONL migration', () => {
+    it('imports entities and relations from an existing JSONL file into a new database', async () => {
+      const base = path.join(path.dirname(fileURLToPath(import.meta.url)), `test-legacy-${Date.now()}`);
+      const jsonlPath = `${base}.jsonl`;
+      const dbPath = `${base}.db`;
+
+      await fs.writeFile(jsonlPath, [
+        JSON.stringify({ type: 'entity', name: 'Alice', entityType: 'person', observations: ['works at Acme Corp'] }),
+        JSON.stringify({ type: 'entity', name: 'Acme Corp', entityType: 'company', observations: [] }),
+        JSON.stringify({ type: 'relation', from: 'Alice', to: 'Acme Corp', relationType: 'works_at' }),
+      ].join('\n'));
+
+      const migrationManager = new KnowledgeGraphManager(dbPath);
+      const graph = await migrationManager.readGraph();
+
+      expect(graph.entities).toHaveLength(2);
+      expect(graph.entities[0].name).toBe('Alice');
+      expect(graph.entities[0].observations).toEqual(['works at Acme Corp']);
+      expect(graph.relations).toHaveLength(1);
+      expect(graph.relations[0]).toEqual({ from: 'Alice', to: 'Acme Corp', relationType: 'works_at' });
+
+      // Legacy file is left in place as a backup
+      expect(await fs.readFile(jsonlPath, 'utf-8')).toContain('"type":"entity"');
+
+      migrationManager.close();
+      await fs.unlink(dbPath);
+      await fs.unlink(jsonlPath);
+    });
+
+    it('migrates legacy memory.json files', async () => {
+      const base = path.join(path.dirname(fileURLToPath(import.meta.url)), `test-legacy-json-${Date.now()}`);
+      const jsonPath = `${base}.json`;
+      const dbPath = `${base}.db`;
+
+      await fs.writeFile(jsonPath, [
+        JSON.stringify({ type: 'entity', name: 'Bob', entityType: 'person', observations: [] }),
+      ].join('\n'));
+
+      const migrationManager = new KnowledgeGraphManager(dbPath);
+      const graph = await migrationManager.readGraph();
+      expect(graph.entities).toHaveLength(1);
+      expect(graph.entities[0].name).toBe('Bob');
+
+      migrationManager.close();
+      await fs.unlink(dbPath);
+      await fs.unlink(jsonPath);
+    });
+
+    it('does not re-import when the database already exists', async () => {
+      const base = path.join(path.dirname(fileURLToPath(import.meta.url)), `test-legacy-existing-${Date.now()}`);
+      const jsonlPath = `${base}.jsonl`;
+      const dbPath = `${base}.db`;
+
+      // Pre-populate the database
+      const preManager = new KnowledgeGraphManager(dbPath);
+      await preManager.createEntities([
+        { name: 'Existing', entityType: 'person', observations: ['from db'] },
+      ]);
+      preManager.close();
+
+      // Legacy file with different content
+      await fs.writeFile(jsonlPath, [
+        JSON.stringify({ type: 'entity', name: 'Legacy', entityType: 'person', observations: [] }),
+      ].join('\n'));
+
+      // Reopen: migration must not run because the database already exists
+      const reopenManager = new KnowledgeGraphManager(dbPath);
+      const graph = await reopenManager.readGraph();
+      expect(graph.entities).toHaveLength(1);
+      expect(graph.entities[0].name).toBe('Existing');
+
+      reopenManager.close();
+      await fs.unlink(dbPath);
+      await fs.unlink(jsonlPath);
+    });
+
+    it('ignores an empty legacy JSONL file', async () => {
+      const base = path.join(path.dirname(fileURLToPath(import.meta.url)), `test-legacy-empty-${Date.now()}`);
+      const jsonlPath = `${base}.jsonl`;
+      const dbPath = `${base}.db`;
+
+      await fs.writeFile(jsonlPath, '\n\n');
+
+      const migrationManager = new KnowledgeGraphManager(dbPath);
+      const graph = await migrationManager.readGraph();
+      expect(graph.entities).toHaveLength(0);
+
+      migrationManager.close();
+      await fs.unlink(dbPath);
+      await fs.unlink(jsonlPath);
     });
   });
 });

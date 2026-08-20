@@ -1,6 +1,16 @@
 {
-  "extends": "../../tsconfig.json",
   "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "types": ["node"],
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "declaration": true,
+    "sourceMap": true,
     "outDir": "./dist",
     "rootDir": "."
   },
@@ -9,6 +19,7 @@
   ],
   "exclude": [
     "**/*.test.ts",
-    "vitest.config.ts"
+    "vitest.config.ts",
+    "dist"
   ]
 }

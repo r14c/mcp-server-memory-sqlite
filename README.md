@@ -52,6 +52,32 @@ Example:
 }
 ```
 
+## Storage
+
+The knowledge graph is stored in a local SQLite database using Node's built-in
+`node:sqlite` module — no native dependencies, requires Node.js >= 22.13. The
+database contains three tables:
+
+- `entities` — `name` (primary key) and `entityType`
+- `observations` — one row per observation, linked to its entity by
+  `entityName`; removed automatically when the entity is deleted
+- `relations` — `from`, `to`, and `relationType` (primary key across all three)
+
+All mutation operations run inside transactions, so the graph is never left in
+a half-written state.
+
+### Migrating from JSONL
+
+Versions before 0.7.0 stored the graph as a JSONL document (`memory.jsonl`). On
+first start with an empty database, the server automatically imports entities
+and relations from a legacy JSONL file next to the database (e.g. `memory.jsonl`
+or `memory.json` next to `memory.db`) and logs what it imported. The legacy
+file is left in place as a backup.
+
+If `MEMORY_FILE_PATH` still points at a `.jsonl`/`.json` file, the server
+redirects the database to the sibling `.db` path and imports the legacy
+contents on first start.
+
 ## API
 
 ### Tools
@@ -201,7 +227,7 @@ The server can be configured using the following environment variables:
         "@modelcontextprotocol/server-memory"
       ],
       "env": {
-        "MEMORY_FILE_PATH": "/path/to/custom/memory.jsonl"
+        "MEMORY_FILE_PATH": "/path/to/custom/memory.db"
       }
     }
   }
@@ -222,14 +248,17 @@ On Windows, use:
         "@modelcontextprotocol/server-memory"
       ],
       "env": {
-        "MEMORY_FILE_PATH": "/path/to/custom/memory.jsonl"
+        "MEMORY_FILE_PATH": "/path/to/custom/memory.db"
       }
     }
   }
 }
 ```
 
-- `MEMORY_FILE_PATH`: Path to the memory storage JSONL file (default: `memory.jsonl` in the server directory)
+- `MEMORY_FILE_PATH`: Path to the memory SQLite database file (default:
+  `memory.db` in the server directory). If the path ends in `.jsonl` or `.json`,
+  it is treated as a legacy JSONL memory file: the database is created at the
+  sibling `.db` path and the JSONL contents are imported on first start.
 
 # VS Code Installation Instructions
 
@@ -337,7 +366,8 @@ Follow these steps for each interaction:
 
 ## Building
 
-Docker:
+The server uses Node's built-in `node:sqlite` module, which requires Node.js
+>= 22.13. Docker:
 
 ```sh
 docker build -t mcp/memory -f src/memory/Dockerfile . 

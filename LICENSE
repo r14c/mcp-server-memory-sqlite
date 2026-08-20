@@ -214,3 +214,26 @@ Creative Commons Attribution 4.0 International (CC-BY-4.0)
 Documentation in this project (excluding specifications) is licensed under
 CC-BY-4.0. See https://creativecommons.org/licenses/by/4.0/legalcode for
 the full license text.
+
+---
+
+FORK NOTICE — mcp-server-memory-sqlite (this repository)
+
+This repository is a fork of @modelcontextprotocol/server-memory from
+modelcontextprotocol/servers. All code, tests, and documentation
+contributed by this fork (the SQLite storage rewrite and related
+changes — see the commits following the upstream history, beginning
+with "Store the knowledge graph in SQLite via node:sqlite") are
+original work of this fork and are dual-licensed, at the recipient's
+option, under:
+
+  - the MIT License (the MIT text reproduced above), and
+  - the Apache License, Version 2.0 (reproduced above).
+
+Copyright (c) 2026 xj9 <xj9@sunshinegardens.org>
+
+Nothing in this notice alters the license of upstream contributions;
+those remain governed by the upstream policy recorded above, with the
+commit dates in this repository's history identifying MIT-era
+(on/before 2026-01-12) versus Apache-2.0-era (after 2026-01-12)
+contributions.
