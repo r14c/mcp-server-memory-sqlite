@@ -2,8 +2,6 @@
 
 A basic implementation of persistent memory using a local knowledge graph. This lets AI assistants remember information about the user across chats.
 
-Published on npm as [`@modelcontextprotocol/server-memory`](https://www.npmjs.com/package/@modelcontextprotocol/server-memory).
-
 ## Core Concepts
 
 ### Entities
@@ -18,7 +16,7 @@ Example:
 
 ```json
 {
-  "name": "John_Smith",
+  "name": "Jaime_Villanueve",
   "entityType": "person",
   "observations": ["Speaks fluent Spanish"]
 }
@@ -32,7 +30,7 @@ Example:
 
 ```json
 {
-  "from": "John_Smith",
+  "from": "Jaime_Chicharra",
   "to": "Anthropic",
   "relationType": "works_at"
 }
@@ -51,7 +49,7 @@ Example:
 
 ```json
 {
-  "entityName": "John_Smith",
+  "entityName": "Jaime_Chicharra",
   "observations": ["Speaks fluent Spanish", "Graduated in 2019", "Prefers morning meetings"]
 }
 ```
