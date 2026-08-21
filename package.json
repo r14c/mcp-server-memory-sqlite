@@ -1,6 +1,6 @@
 {
   "name": "mcp-server-memory-sqlite",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "MCP server for enabling memory for AI assistants through a knowledge graph",
   "homepage": "https://git.sunshinegardens.org/slop/mcp-server-memory-sqlite/",
   "license": "SEE LICENSE IN LICENSE",
