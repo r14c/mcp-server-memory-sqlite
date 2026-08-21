@@ -58,4 +58,3 @@ backfill and populates the index through the triggers.
 - The root `memory.db` is an empty scratch artifact (gitignored: `*.db`). The
   real database path comes from `MEMORY_FILE_PATH`; a legacy `.jsonl`/`.json`
   path is redirected to a sibling `.db` and imported on first open.
-
