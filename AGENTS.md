@@ -3,13 +3,29 @@
 MCP server exposing a knowledge-graph memory (entities, relations, observations)
 as tools and a resource. A fork of the Model Context Protocol reference memory
 server, backed by SQLite via `node:sqlite` (requires Node >= 24) instead
-of an in-memory JSONL document.
+of an in-memory JSONL document. The tool surface (nine tools + the
+`memory://knowledge-graph` resource, with their schemas and shapes) is frozen
+to match upstream, but behavior diverges deliberately for correctness:
+dangling relations are rejected, entity names are case-insensitive, and
+inverse relations are materialized on write.
 
 ## Data model
 
-- `entities(name PK, entityType)` — observations cascade-delete with the entity.
+- `entities(name PK, entityType)` — names compare case-insensitively via a
+  `COLLATE NOCASE` unique index (migration 004): first-seen casing is
+  preserved, later case-variants dedupe. Observations cascade-delete with the
+  entity.
 - `observations(entityName, content, PK(entityName, content))` — FK to entities.
-- `relations(from, to, relationType, PK(from, to, relationType))` — no FK.
+- `relations(from, to, relationType, PK(from, to, relationType))` — `from`/`to`
+  FK to `entities(name) ON DELETE CASCADE` (migration 005). Writes resolve
+  endpoint names to their canonical casing first; the FK rejects dangling
+  edges as a backstop.
+- `relation_semantics` (a code constant in `lib/ontology.ts`, not a table)
+  declares inverse pairs and transitivity for a curated relation vocabulary.
+  Inverses are materialized on write (`create_relations` also writes the
+  inverse edge) and removed together on delete, keeping the graph
+  directionally closed. `transitive` is metadata only, for a future traversal
+  consumer.
 - `created_at` / `updated_at` — TEXT ISO-8601 UTC provenance columns on
   `entities`, `observations`, and `relations`, stamped by the application on
   insert (`new Date().toISOString()`). Nothing updates rows in place yet, so
@@ -39,8 +55,9 @@ tokenizer minimum, counted as code points) fall back to a LIKE scan
 errors (pathological input, e.g. NUL) also fall back.
 
 Schema versioning uses `sqlite-up`: numbered migration files in `migrations/`
-(`001_initial_schema.ts`, `002_add_timestamps.ts`, `003_add_provenance.ts`) are applied in order on
-open by `lib/migrate.ts`, each batch wrapped in a transaction. Applied
+(`001_initial_schema.ts`, `002_add_timestamps.ts`, `003_add_provenance.ts`,
+`004_nocase_entity_identity.ts`, `005_relation_foreign_keys.ts`) are applied in
+order on open by `lib/migrate.ts`, each batch wrapped in a transaction. Applied
 migrations are recorded in the `schema_migrations` table; a fresh database
 runs every migration, an existing one runs only those not yet recorded. The
 schema bootstrap (tables, FTS index, triggers) lives in migration 001, which
@@ -49,6 +66,14 @@ drops and rebuilds `search_index` so it reconciles databases that predate the
 the async `open()` factory, not `new`, so migrations finish first. The legacy
 JSONL import runs after migrations on a fresh database and populates the index
 through the triggers.
+
+## Module layout
+
+- `index.ts` — entry point; re-exports the public surface and runs `main()`.
+- `lib/manager.ts` — `KnowledgeGraphManager` (SQLite operations).
+- `lib/server.ts` — `buildServer` + the nine tool registrations, the resource, and subscriptions.
+- `lib/migrate.ts` — sqlite-up migration runner.
+- `lib/types.ts` / `lib/ontology.ts` / `lib/paths.ts` — types, relation vocabulary, path resolution.
 
 ## Commands
 
@@ -75,8 +100,11 @@ through the triggers.
 - The root `memory.db` is an empty scratch artifact (gitignored: `*.db`). The
   real database path comes from `MEMORY_FILE_PATH`; a legacy `.jsonl`/`.json`
   path is redirected to a sibling `.db` and imported on first open.
+- Entity identity (`COLLATE NOCASE`) folds ASCII case only, while the FTS5
+  trigram index folds diacritics too — so `"Café"` and `"café"` are distinct
+  entities that both surface in search. Identity does not trim whitespace.
 - Migration filenames are recorded verbatim by `sqlite-up` (`.ts` under source,
-  `.js` under compiled `dist/`). Opening the *same* database file from both
+  `.js` under compiled `dist/`). Opening the _same_ database file from both
   modes (e.g. a fixed `MEMORY_FILE_PATH` shared between `tsx`/vitest and
   `node dist/index.js`) would make the other mode's migrations look pending and
   re-run them, failing on `duplicate column name`. The default paths differ

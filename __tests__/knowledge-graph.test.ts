@@ -463,6 +463,8 @@ describe("KnowledgeGraphManager", () => {
         "001_initial_schema.ts",
         "002_add_timestamps.ts",
         "003_add_provenance.ts",
+        "004_nocase_entity_identity.ts",
+        "005_relation_foreign_keys.ts",
       ]);
       // 2 entity rows + 3 observation rows
       expect(db2.prepare("SELECT count(*) c FROM search_index").get().c).toBe(5);
@@ -664,10 +666,10 @@ describe("KnowledgeGraphManager", () => {
         [{ name: "Alice", entityType: "person", observations: ["hello"] }],
         { source: "test-client", session: "sess-1" },
       );
-      await manager.createRelations(
-        [{ from: "Alice", to: "Alice", relationType: "self" }],
-        { source: "test-client", session: "sess-1" },
-      );
+      await manager.createRelations([{ from: "Alice", to: "Alice", relationType: "self" }], {
+        source: "test-client",
+        session: "sess-1",
+      });
 
       const db = new DatabaseSync(testFilePath, { readOnly: true });
       const entity = db.prepare("SELECT source, session FROM entities WHERE name = 'Alice'").get();
@@ -689,6 +691,64 @@ describe("KnowledgeGraphManager", () => {
 
       expect(row.source).toBeNull();
       expect(row.session).toBeNull();
+    });
+  });
+
+  describe("data integrity", () => {
+    it("rejects relations with a non-existent endpoint", async () => {
+      await manager.createEntities([{ name: "Alice", entityType: "person", observations: [] }]);
+
+      await expect(
+        manager.createRelations([{ from: "Alice", to: "Ghost", relationType: "knows" }]),
+      ).rejects.toThrow("Entity with name Ghost not found");
+      await expect(
+        manager.createRelations([{ from: "Ghost", to: "Alice", relationType: "knows" }]),
+      ).rejects.toThrow("Entity with name Ghost not found");
+
+      // The rejected batch is atomic: nothing was written.
+      const graph = await manager.readGraph();
+      expect(graph.relations).toHaveLength(0);
+    });
+
+    it("treats entity names case-insensitively", async () => {
+      await manager.createEntities([{ name: "Alice", entityType: "person", observations: [] }]);
+
+      // A case-variant create is deduplicated against the stored entity.
+      const dup = await manager.createEntities([
+        { name: "alice", entityType: "person", observations: [] },
+      ]);
+      expect(dup).toHaveLength(0);
+
+      // open_nodes resolves different casing to the canonical name.
+      const opened = await manager.openNodes(["ALICE"]);
+      expect(opened.entities.map((e) => e.name)).toEqual(["Alice"]);
+
+      // add_observations resolves case-insensitively and reports the canonical name.
+      const added = await manager.addObservations([
+        { entityName: "alice", contents: ["likes coffee"] },
+      ]);
+      expect(added[0].entityName).toBe("Alice");
+      const graph = await manager.readGraph();
+      expect(graph.entities.find((e) => e.name === "Alice")?.observations).toContain(
+        "likes coffee",
+      );
+    });
+
+    it("materializes and removes inverse relations", async () => {
+      await manager.createEntities([
+        { name: "A", entityType: "thing", observations: [] },
+        { name: "B", entityType: "thing", observations: [] },
+      ]);
+
+      await manager.createRelations([{ from: "A", to: "B", relationType: "part_of" }]);
+      let graph = await manager.readGraph();
+      expect(graph.relations).toContainEqual({ from: "A", to: "B", relationType: "part_of" });
+      expect(graph.relations).toContainEqual({ from: "B", to: "A", relationType: "contains" });
+
+      // Deleting one side of the inverse pair removes both.
+      await manager.deleteRelations([{ from: "A", to: "B", relationType: "part_of" }]);
+      graph = await manager.readGraph();
+      expect(graph.relations).toHaveLength(0);
     });
   });
 
