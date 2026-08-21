@@ -68,6 +68,32 @@ export class KnowledgeGraphManager {
     mkdirSync(path.dirname(this.memoryFilePath), { recursive: true });
     const dbExisted = existsSync(this.memoryFilePath);
     this.db = new DatabaseSync(this.memoryFilePath);
+    try {
+      this.initialize(dbExisted);
+    } catch (error) {
+      // Never leak the open connection if setup fails partway through (e.g. a
+      // corrupt file detected by assertIntegrity, or a bad legacy import).
+      try {
+        this.db.close();
+      } catch {
+        // Already failing; ignore secondary close errors.
+      }
+      throw error;
+    }
+  }
+
+  private initialize(dbExisted: boolean): void {
+    // Operational pragmas. WAL is append-only and checksummed, which removes
+    // the torn-page failure mode of the rollback journal. synchronous=FULL
+    // keeps every committed transaction durable across power loss at the cost
+    // of write throughput; this server's request volume is low, so durability
+    // wins over speed. busy_timeout makes concurrent access wait instead of
+    // failing immediately with SQLITE_BUSY.
+    this.db.exec(`
+      PRAGMA journal_mode = WAL;
+      PRAGMA synchronous = FULL;
+      PRAGMA busy_timeout = 5000;
+    `);
     this.db.exec(`
       PRAGMA foreign_keys = ON;
       CREATE TABLE IF NOT EXISTS entities (
@@ -133,10 +159,32 @@ export class KnowledgeGraphManager {
     if (!dbExisted) {
       this.importLegacyJsonl();
     }
+    this.assertIntegrity();
   }
 
   close(): void {
+    // Fold the WAL back into the main database on clean shutdown and drop the
+    // -wal/-shm sidecar files. Best-effort: a failed checkpoint must not
+    // prevent the connection from closing. optimize is a cheap no-op unless
+    // SQLite decides fresh statistics would help the query planner.
+    try {
+      this.db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+      this.db.exec('PRAGMA optimize');
+    } catch (error) {
+      console.error(`Error finalizing database ${this.memoryFilePath}:`, error);
+    }
     this.db.close();
+  }
+
+  // Fail fast on open if the database file is corrupt instead of returning
+  // silently wrong results later. quick_check is the fast corruption scan
+  // (it reads every page once, unlike the slower integrity_check), so startup
+  // cost grows with database size but is negligible for typical memory stores.
+  private assertIntegrity(): void {
+    const { quick_check } = this.db.prepare('PRAGMA quick_check').get() as { quick_check: string };
+    if (quick_check !== 'ok') {
+      throw new Error(`SQLite quick_check failed for ${this.memoryFilePath}: ${quick_check}`);
+    }
   }
 
   private transaction<T>(fn: () => T): T {

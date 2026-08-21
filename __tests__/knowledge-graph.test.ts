@@ -457,6 +457,10 @@ describe('KnowledgeGraphManager', () => {
       expect(db2.prepare('SELECT count(*) c FROM search_index').get().c).toBe(5);
       db2.close();
       await fs.unlink(oldPath);
+      // A read-only connection never owns the WAL, so it leaves the -wal/-shm
+      // sidecars behind when it is the last connection to close; clean them up.
+      await fs.rm(`${oldPath}-wal`, { force: true });
+      await fs.rm(`${oldPath}-shm`, { force: true });
     });
   });
 
@@ -542,6 +546,7 @@ describe('KnowledgeGraphManager', () => {
 
       expect(graph.entities).toHaveLength(1);
       expect(graph.entities[0].name).toBe('Alice');
+      manager2.close();
     });
 
     it('should store data in SQLite tables', async () => {
@@ -599,6 +604,7 @@ describe('KnowledgeGraphManager', () => {
         expect(relation).toHaveProperty('to');
         expect(relation).toHaveProperty('relationType');
       });
+      manager2.close();
     });
 
     it('should strip type field from searchNodes results', async () => {
@@ -621,6 +627,7 @@ describe('KnowledgeGraphManager', () => {
       expect(result.relations).toHaveLength(1);
       expect(result.relations[0]).not.toHaveProperty('type');
       expect(result.relations[0].from).toBe('Alice');
+      manager2.close();
     });
 
     it('should strip type field from openNodes results', async () => {
@@ -644,6 +651,7 @@ describe('KnowledgeGraphManager', () => {
 
       expect(result.relations).toHaveLength(1);
       expect(result.relations[0]).not.toHaveProperty('type');
+      manager2.close();
     });
   });
 
