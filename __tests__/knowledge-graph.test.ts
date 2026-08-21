@@ -465,6 +465,7 @@ describe("KnowledgeGraphManager", () => {
         "003_add_provenance.ts",
         "004_nocase_entity_identity.ts",
         "005_relation_foreign_keys.ts",
+        "006_deferred_relation_foreign_keys.ts",
       ]);
       // 2 entity rows + 3 observation rows
       expect(db2.prepare("SELECT count(*) c FROM search_index").get().c).toBe(5);
@@ -800,6 +801,109 @@ describe("KnowledgeGraphManager", () => {
 
       // Legacy file is left in place as a backup
       expect(await fs.readFile(jsonlPath, "utf-8")).toContain('"type":"entity"');
+
+      migrationManager.close();
+      await fs.unlink(dbPath);
+      await fs.unlink(jsonlPath);
+    });
+
+    it("imports relations that precede their entities in the file", async () => {
+      const base = path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        `test-legacy-out-of-order-${Date.now()}`,
+      );
+      const jsonlPath = `${base}.jsonl`;
+      const dbPath = `${base}.db`;
+
+      // Legacy JSONL had no foreign keys, so upstream files can legally place
+      // a relation line before the entity lines it references. The two-pass
+      // import must accept that ordering.
+      await fs.writeFile(
+        jsonlPath,
+        [
+          JSON.stringify({
+            type: "relation",
+            from: "Alice",
+            to: "Acme Corp",
+            relationType: "works_at",
+          }),
+          JSON.stringify({
+            type: "entity",
+            name: "Alice",
+            entityType: "person",
+            observations: [],
+          }),
+          JSON.stringify({
+            type: "entity",
+            name: "Acme Corp",
+            entityType: "company",
+            observations: [],
+          }),
+        ].join("\n"),
+      );
+
+      const migrationManager = await KnowledgeGraphManager.open(dbPath);
+      const graph = await migrationManager.readGraph();
+
+      expect(graph.entities).toHaveLength(2);
+      expect(graph.relations).toEqual([
+        { from: "Alice", to: "Acme Corp", relationType: "works_at" },
+      ]);
+
+      migrationManager.close();
+      await fs.unlink(dbPath);
+      await fs.unlink(jsonlPath);
+    });
+
+    it("canonicalizes case-variant endpoints and drops dangling relations", async () => {
+      const base = path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        `test-legacy-dangling-${Date.now()}`,
+      );
+      const jsonlPath = `${base}.jsonl`;
+      const dbPath = `${base}.db`;
+
+      await fs.writeFile(
+        jsonlPath,
+        [
+          JSON.stringify({
+            type: "entity",
+            name: "Alice",
+            entityType: "person",
+            observations: [],
+          }),
+          JSON.stringify({
+            type: "entity",
+            name: "Acme Corp",
+            entityType: "company",
+            observations: [],
+          }),
+          // Case-variant endpoints canonicalized to stored casing.
+          JSON.stringify({
+            type: "relation",
+            from: "alice",
+            to: "acme corp",
+            relationType: "works_at",
+          }),
+          // Dangling edge: 'Ghost' never appears as an entity.
+          JSON.stringify({
+            type: "relation",
+            from: "Ghost",
+            to: "Alice",
+            relationType: "knows",
+          }),
+        ].join("\n"),
+      );
+
+      const migrationManager = await KnowledgeGraphManager.open(dbPath);
+      const graph = await migrationManager.readGraph();
+
+      expect(graph.entities).toHaveLength(2);
+      // The case-variant relation is canonicalized to stored casing; the
+      // dangling 'Ghost' edge is dropped, mirroring migration 005's rebuild.
+      expect(graph.relations).toEqual([
+        { from: "Alice", to: "Acme Corp", relationType: "works_at" },
+      ]);
 
       migrationManager.close();
       await fs.unlink(dbPath);

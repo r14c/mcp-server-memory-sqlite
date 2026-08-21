@@ -132,6 +132,13 @@ export class KnowledgeGraphManager {
   // Import legacy JSONL data (memory.jsonl / memory.json) into the database.
   // Only called when the database file did not exist yet, so existing SQLite
   // data is never touched. The legacy file is left in place as a backup.
+  //
+  // Legacy files are imported in two passes (entities first, then relations)
+  // because upstream JSONL had no foreign keys: a relation line may precede
+  // its endpoint's entity line, and the FK constraint would reject that order.
+  // Pass 2 also canonicalizes case-variant endpoints to the stored casing and
+  // drops genuinely dangling edges, matching migration 005's rebuild behavior
+  // for the same legacy data.
   private importLegacyJsonl(): void {
     const ext = path.extname(this.memoryFilePath);
     const base = this.memoryFilePath.slice(0, this.memoryFilePath.length - ext.length);
@@ -160,20 +167,38 @@ export class KnowledgeGraphManager {
       const now = this.now();
       let entities = 0;
       let relations = 0;
+      let dropped = 0;
       this.db.exec("BEGIN");
       try {
+        // Pass 1: entities and their observations. Observations attach to the
+        // canonical stored casing so the BINARY observation FK matches even
+        // when the file contains case-variant duplicates of one entity.
         for (const line of lines) {
           const item = JSON.parse(line);
-          if (item.type === "entity") {
-            insertEntity.run(item.name, item.entityType, now, now);
-            for (const observation of item.observations ?? []) {
-              insertObservation.run(item.name, observation, now, now);
-            }
+          if (item.type !== "entity") continue;
+          const canonical = this.resolveEntityName(item.name) ?? item.name;
+          if (insertEntity.run(canonical, item.entityType, now, now).changes > 0) {
             entities++;
-          } else if (item.type === "relation") {
-            insertRelation.run(item.from, item.to, item.relationType, now, now);
-            relations++;
           }
+          for (const observation of item.observations ?? []) {
+            insertObservation.run(canonical, observation, now, now);
+          }
+        }
+        // Pass 2: relations, once every endpoint entity is present. Endpoints
+        // are canonicalized to the stored casing; edges whose endpoints never
+        // appeared in the file are dropped (legacy JSONL had no FK enforcement,
+        // so dangling edges were legal there).
+        for (const line of lines) {
+          const item = JSON.parse(line);
+          if (item.type !== "relation") continue;
+          const from = this.resolveEntityName(item.from);
+          const to = this.resolveEntityName(item.to);
+          if (from === undefined || to === undefined) {
+            dropped++;
+            continue;
+          }
+          insertRelation.run(from, to, item.relationType, now, now);
+          relations++;
         }
         this.db.exec("COMMIT");
       } catch (error) {
@@ -181,7 +206,8 @@ export class KnowledgeGraphManager {
         throw error;
       }
       console.error(
-        `MIGRATED: imported ${entities} entities and ${relations} relations from legacy JSONL file ${legacyPath} into SQLite database ${this.memoryFilePath}`,
+        `MIGRATED: imported ${entities} entities and ${relations} relations from legacy JSONL file ${legacyPath} into SQLite database ${this.memoryFilePath}` +
+          (dropped > 0 ? `; dropped ${dropped} dangling relation${dropped === 1 ? "" : "s"}` : ""),
       );
       return;
     }

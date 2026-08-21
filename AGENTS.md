@@ -17,9 +17,13 @@ inverse relations are materialized on write.
   entity.
 - `observations(entityName, content, PK(entityName, content))` — FK to entities.
 - `relations(from, to, relationType, PK(from, to, relationType))` — `from`/`to`
-  FK to `entities(name) ON DELETE CASCADE` (migration 005). Writes resolve
-  endpoint names to their canonical casing first; the FK rejects dangling
-  edges as a backstop.
+  FK to `entities(name) ON DELETE CASCADE`, declared `DEFERRABLE INITIALLY
+  DEFERRED` (migrations 005 + 006). The deferred declaration moves the FK
+  check from statement end to the enclosing transaction's COMMIT, so within
+  one transaction a relation may be inserted before its endpoint entity
+  exists; a genuinely dangling edge still fails at COMMIT and rolls back the
+  whole transaction. Writes resolve endpoint names to their canonical casing
+  first; the FK rejects dangling edges as a backstop.
 - `relation_semantics` (a code constant in `lib/ontology.ts`, not a table)
   declares inverse pairs and transitivity for a curated relation vocabulary.
   Inverses are materialized on write (`create_relations` also writes the
@@ -56,14 +60,18 @@ errors (pathological input, e.g. NUL) also fall back.
 
 Schema versioning uses `sqlite-up`: numbered migration files in `migrations/`
 (`001_initial_schema.ts`, `002_add_timestamps.ts`, `003_add_provenance.ts`,
-`004_nocase_entity_identity.ts`, `005_relation_foreign_keys.ts`) are applied in
+`004_nocase_entity_identity.ts`, `005_relation_foreign_keys.ts`,
+`006_deferred_relation_foreign_keys.ts`) are applied in
 order on open by `lib/migrate.ts`, each batch wrapped in a transaction. Applied
 migrations are recorded in the `schema_migrations` table; a fresh database
 runs every migration, an existing one runs only those not yet recorded. The
 schema bootstrap (tables, FTS index, triggers) lives in migration 001, which
 drops and rebuilds `search_index` so it reconciles databases that predate the
-`kind` discriminator column. `KnowledgeGraphManager` must be constructed via
-the async `open()` factory, not `new`, so migrations finish first. The legacy
+`kind` discriminator column. Migration 006 rebuilds `relations` with the
+`DEFERRABLE INITIALLY DEFERRED` foreign keys; migration 005 (which added the
+FKs and canonicalized/dropped dangling edges) must run first, so the 006 copy
+is a straight one. `KnowledgeGraphManager` must be constructed via the
+async `open()` factory, not `new`, so migrations finish first. The legacy
 JSONL import runs after migrations on a fresh database and populates the index
 through the triggers.
 
