@@ -58,6 +58,14 @@ export interface Relation {
   relationType: string;
 }
 
+// Provenance captured from the MCP layer and stamped onto written rows: the
+// client identity reported during the initialize handshake, and the transport
+// session id (undefined over the stdio transport).
+export interface Provenance {
+  source?: string;
+  session?: string;
+}
+
 export interface KnowledgeGraph {
   entities: Entity[];
   relations: Relation[];
@@ -281,20 +289,22 @@ export class KnowledgeGraphManager {
     };
   }
 
-  async createEntities(entities: Entity[]): Promise<Entity[]> {
+  async createEntities(entities: Entity[], provenance?: Provenance): Promise<Entity[]> {
     const insertEntity = this.db.prepare(
-      "INSERT OR IGNORE INTO entities (name, entityType, created_at, updated_at) VALUES (?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO entities (name, entityType, created_at, updated_at, source, session) VALUES (?, ?, ?, ?, ?, ?)",
     );
     const insertObservation = this.db.prepare(
-      "INSERT OR IGNORE INTO observations (entityName, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO observations (entityName, content, created_at, updated_at, source, session) VALUES (?, ?, ?, ?, ?, ?)",
     );
+    const source = provenance?.source ?? null;
+    const session = provenance?.session ?? null;
     return this.transaction(() => {
       const newEntities: Entity[] = [];
       for (const entity of entities) {
         const now = this.now();
-        if (insertEntity.run(entity.name, entity.entityType, now, now).changes > 0) {
+        if (insertEntity.run(entity.name, entity.entityType, now, now, source, session).changes > 0) {
           for (const observation of entity.observations) {
-            insertObservation.run(entity.name, observation, now, now);
+            insertObservation.run(entity.name, observation, now, now, source, session);
           }
           newEntities.push(entity);
         }
@@ -303,17 +313,26 @@ export class KnowledgeGraphManager {
     });
   }
 
-  async createRelations(relations: Relation[]): Promise<Relation[]> {
+  async createRelations(relations: Relation[], provenance?: Provenance): Promise<Relation[]> {
     const insertRelation = this.db.prepare(
-      'INSERT OR IGNORE INTO relations ("from", "to", relationType, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
+      'INSERT OR IGNORE INTO relations ("from", "to", relationType, created_at, updated_at, source, session) VALUES (?, ?, ?, ?, ?, ?, ?)',
     );
+    const source = provenance?.source ?? null;
+    const session = provenance?.session ?? null;
     return this.transaction(() => {
       const newRelations: Relation[] = [];
       for (const relation of relations) {
         const now = this.now();
         if (
-          insertRelation.run(relation.from, relation.to, relation.relationType, now, now).changes >
-          0
+          insertRelation.run(
+            relation.from,
+            relation.to,
+            relation.relationType,
+            now,
+            now,
+            source,
+            session,
+          ).changes > 0
         ) {
           newRelations.push(relation);
         }
@@ -324,11 +343,14 @@ export class KnowledgeGraphManager {
 
   async addObservations(
     observations: { entityName: string; contents: string[] }[],
+    provenance?: Provenance,
   ): Promise<{ entityName: string; addedObservations: string[] }[]> {
     const findEntity = this.db.prepare("SELECT name FROM entities WHERE name = ?");
     const insertObservation = this.db.prepare(
-      "INSERT OR IGNORE INTO observations (entityName, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
+      "INSERT OR IGNORE INTO observations (entityName, content, created_at, updated_at, source, session) VALUES (?, ?, ?, ?, ?, ?)",
     );
+    const source = provenance?.source ?? null;
+    const session = provenance?.session ?? null;
     return this.transaction(() => {
       const results = observations.map((o) => {
         if (!findEntity.get(o.entityName)) {
@@ -337,7 +359,7 @@ export class KnowledgeGraphManager {
         const now = this.now();
         const addedObservations: string[] = [];
         for (const content of o.contents) {
-          if (insertObservation.run(o.entityName, content, now, now).changes > 0) {
+          if (insertObservation.run(o.entityName, content, now, now, source, session).changes > 0) {
             addedObservations.push(content);
           }
         }
@@ -489,6 +511,16 @@ function notifyGraphUpdated() {
   }
 }
 
+// Capture provenance from the MCP layer: the client identity reported during
+// the initialize handshake, and the transport session id (undefined over the
+// stdio transport, which has a single session per process).
+function provenanceFrom(extra: { sessionId?: string }): Provenance {
+  return {
+    source: server.server.getClientVersion()?.name,
+    session: extra.sessionId,
+  };
+}
+
 // Register create_entities tool
 server.registerTool(
   "create_entities",
@@ -508,8 +540,8 @@ server.registerTool(
       openWorldHint: false,
     },
   },
-  async ({ entities }) => {
-    const result = await knowledgeGraphManager.createEntities(entities);
+  async ({ entities }, extra) => {
+    const result = await knowledgeGraphManager.createEntities(entities, provenanceFrom(extra));
     notifyGraphUpdated();
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
@@ -538,8 +570,8 @@ server.registerTool(
       openWorldHint: false,
     },
   },
-  async ({ relations }) => {
-    const result = await knowledgeGraphManager.createRelations(relations);
+  async ({ relations }, extra) => {
+    const result = await knowledgeGraphManager.createRelations(relations, provenanceFrom(extra));
     notifyGraphUpdated();
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
@@ -577,8 +609,8 @@ server.registerTool(
       openWorldHint: false,
     },
   },
-  async ({ observations }) => {
-    const result = await knowledgeGraphManager.addObservations(observations);
+  async ({ observations }, extra) => {
+    const result = await knowledgeGraphManager.addObservations(observations, provenanceFrom(extra));
     notifyGraphUpdated();
     return {
       content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],

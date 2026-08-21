@@ -14,6 +14,12 @@ of an in-memory JSONL document.
   `entities`, `observations`, and `relations`, stamped by the application on
   insert (`new Date().toISOString()`). Nothing updates rows in place yet, so
   `updated_at` equals `created_at` until in-place mutation is introduced.
+- `source` / `session` — nullable TEXT provenance columns on the same three
+  tables, captured from the MCP layer: `source` is the client name from the
+  `initialize` handshake (`server.server.getClientVersion()?.name`), `session`
+  is the transport session id (`extra.sessionId`, NULL over the stdio
+  transport). Stamped on insert alongside the timestamps; legacy JSONL imports
+  and rows written before this feature leave them NULL.
 - `search_index` — FTS5 virtual table (`tokenize = 'trigram'`) over entity
   names, entity types, and observation content, kept in sync by the
   `search_index_*` triggers on `entities` and `observations`. Two row kinds,
@@ -33,7 +39,7 @@ tokenizer minimum, counted as code points) fall back to a LIKE scan
 errors (pathological input, e.g. NUL) also fall back.
 
 Schema versioning uses `sqlite-up`: numbered migration files in `migrations/`
-(`001_initial_schema.ts`, `002_add_timestamps.ts`) are applied in order on
+(`001_initial_schema.ts`, `002_add_timestamps.ts`, `003_add_provenance.ts`) are applied in order on
 open by `lib/migrate.ts`, each batch wrapped in a transaction. Applied
 migrations are recorded in the `schema_migrations` table; a fresh database
 runs every migration, an existing one runs only those not yet recorded. The

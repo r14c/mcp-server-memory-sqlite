@@ -456,12 +456,13 @@ describe("KnowledgeGraphManager", () => {
       reopened.close();
 
       const db2 = new DatabaseSync(oldPath, { readOnly: true });
-      // Both migrations are recorded, proving the pre-search-index database
+      // All migrations are recorded, proving the pre-search-index database
       // was upgraded in place (the backfill that populated search_index ran).
       const applied = db2.prepare("SELECT name FROM schema_migrations ORDER BY name").all();
       expect(applied.map((r) => r.name)).toEqual([
         "001_initial_schema.ts",
         "002_add_timestamps.ts",
+        "003_add_provenance.ts",
       ]);
       // 2 entity rows + 3 observation rows
       expect(db2.prepare("SELECT count(*) c FROM search_index").get().c).toBe(5);
@@ -654,6 +655,40 @@ describe("KnowledgeGraphManager", () => {
       expect(result.relations).toHaveLength(1);
       expect(result.relations[0]).not.toHaveProperty("type");
       manager2.close();
+    });
+  });
+
+  describe("provenance", () => {
+    it("stamps source/session from the MCP layer onto created rows", async () => {
+      await manager.createEntities(
+        [{ name: "Alice", entityType: "person", observations: ["hello"] }],
+        { source: "test-client", session: "sess-1" },
+      );
+      await manager.createRelations(
+        [{ from: "Alice", to: "Alice", relationType: "self" }],
+        { source: "test-client", session: "sess-1" },
+      );
+
+      const db = new DatabaseSync(testFilePath, { readOnly: true });
+      const entity = db.prepare("SELECT source, session FROM entities WHERE name = 'Alice'").get();
+      const relation = db.prepare("SELECT source, session FROM relations LIMIT 1").get();
+      const observation = db.prepare("SELECT source, session FROM observations LIMIT 1").get();
+      db.close();
+
+      expect(entity).toMatchObject({ source: "test-client", session: "sess-1" });
+      expect(relation).toMatchObject({ source: "test-client", session: "sess-1" });
+      expect(observation).toMatchObject({ source: "test-client", session: "sess-1" });
+    });
+
+    it("leaves source/session NULL when no provenance is provided", async () => {
+      await manager.createEntities([{ name: "Bob", entityType: "person", observations: [] }]);
+
+      const db = new DatabaseSync(testFilePath, { readOnly: true });
+      const row = db.prepare("SELECT source, session FROM entities WHERE name = 'Bob'").get();
+      db.close();
+
+      expect(row.source).toBeNull();
+      expect(row.session).toBeNull();
     });
   });
 
