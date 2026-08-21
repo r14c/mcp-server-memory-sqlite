@@ -2,7 +2,7 @@
 
 MCP server exposing a knowledge-graph memory (entities, relations, observations)
 as tools and a resource. A fork of the Model Context Protocol reference memory
-server, backed by SQLite via `node:sqlite` (built into Node >= 22.13) instead
+server, backed by SQLite via `node:sqlite` (requires Node >= 24) instead
 of an in-memory JSONL document.
 
 ## Data model
@@ -10,6 +10,10 @@ of an in-memory JSONL document.
 - `entities(name PK, entityType)` — observations cascade-delete with the entity.
 - `observations(entityName, content, PK(entityName, content))` — FK to entities.
 - `relations(from, to, relationType, PK(from, to, relationType))` — no FK.
+- `created_at` / `updated_at` — TEXT ISO-8601 UTC provenance columns on
+  `entities`, `observations`, and `relations`, stamped by the application on
+  insert (`new Date().toISOString()`). Nothing updates rows in place yet, so
+  `updated_at` equals `created_at` until in-place mutation is introduced.
 - `search_index` — FTS5 virtual table (`tokenize = 'trigram'`) over entity
   names, entity types, and observation content, kept in sync by the
   `search_index_*` triggers on `entities` and `observations`. Two row kinds,
@@ -28,11 +32,17 @@ tokenizer minimum, counted as code points) fall back to a LIKE scan
 (`searchNodesLike`), which retains the original wildcard behavior; MATCH
 errors (pathological input, e.g. NUL) also fall back.
 
-Schema versioning uses `PRAGMA user_version`: 0 = pre-search-index, 1 =
-current. On open, `backfillSearchIndex()` backfills the index from `entities` +
-`observations` inside one transaction that also sets the marker, so a crash
-leaves the database clean for a retry. The legacy JSONL import runs after the
-backfill and populates the index through the triggers.
+Schema versioning uses `sqlite-up`: numbered migration files in `migrations/`
+(`001_initial_schema.ts`, `002_add_timestamps.ts`) are applied in order on
+open by `lib/migrate.ts`, each batch wrapped in a transaction. Applied
+migrations are recorded in the `schema_migrations` table; a fresh database
+runs every migration, an existing one runs only those not yet recorded. The
+schema bootstrap (tables, FTS index, triggers) lives in migration 001, which
+drops and rebuilds `search_index` so it reconciles databases that predate the
+`kind` discriminator column. `KnowledgeGraphManager` must be constructed via
+the async `open()` factory, not `new`, so migrations finish first. The legacy
+JSONL import runs after migrations on a fresh database and populates the index
+through the triggers.
 
 ## Commands
 
@@ -43,14 +53,15 @@ backfill and populates the index through the triggers.
 ## Gotchas
 
 - `node:sqlite` must have FTS5 with the trigram tokenizer; the server fails at
-  startup otherwise. Verified on nixpkgs `nodejs-slim-22.23.2` and
-  `nodejs-slim-24.19.0` (both SQLite 3.51.2).
+  startup otherwise. Verified on nixpkgs `nodejs-slim-24.19.0` (SQLite
+  3.51.2); Node >= 24 is required by `sqlite-up`.
 - Behavior change vs. the old LIKE search: `%` and `_` in a query are literal
   on the indexed path (FTS5 phrase), not wildcards; the < 3-char LIKE fallback
   keeps wildcard behavior, so results for such queries can differ.
-- Importing `index.ts` / `dist/index.js` under vitest runs module-scope `main()`
-  which calls `process.exit(1)`; vitest reports two unhandled rejections but
-  every test passes. Pre-existing, unrelated to this change.
+- Importing `index.ts` / `dist/index.js` under vitest runs module-scope
+  `main()`, which opens and migrates the root scratch `memory.db` (gitignored)
+  and attempts a stdio connection. Harmless for tests, but the scratch database
+  is touched by every test run.
 - The standalone indexes `idx_observations_entityName` and `idx_relations_from`
   are redundant — the observations PK `(entityName, content)` and the relations
   PK `("from","to",relationType)` already cover those prefix lookups — and are
@@ -58,3 +69,9 @@ backfill and populates the index through the triggers.
 - The root `memory.db` is an empty scratch artifact (gitignored: `*.db`). The
   real database path comes from `MEMORY_FILE_PATH`; a legacy `.jsonl`/`.json`
   path is redirected to a sibling `.db` and imported on first open.
+- Migration filenames are recorded verbatim by `sqlite-up` (`.ts` under source,
+  `.js` under compiled `dist/`). Opening the *same* database file from both
+  modes (e.g. a fixed `MEMORY_FILE_PATH` shared between `tsx`/vitest and
+  `node dist/index.js`) would make the other mode's migrations look pending and
+  re-run them, failing on `duplicate column name`. The default paths differ
+  (`memory.db` vs `dist/memory.db`), so this does not arise in normal use.

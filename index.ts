@@ -11,6 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import { mkdirSync, existsSync, readFileSync } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
+import { applyMigrations } from "./lib/migrate.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
@@ -63,108 +64,70 @@ export interface KnowledgeGraph {
 }
 
 // The KnowledgeGraphManager class contains all operations to interact with the
-// knowledge graph, backed by a SQLite database (node:sqlite, built into
-// Node.js >= 22.13). Mutations run inside transactions so the graph is never
-// left half-written.
+// knowledge graph, backed by a SQLite database (node:sqlite, requires Node.js
+// >= 24). Mutations run inside transactions so the graph is never left
+// half-written.
 export class KnowledgeGraphManager {
   private db: DatabaseSync;
 
-  constructor(private memoryFilePath: string) {
+  // Opens the database and applies pending migrations. The schema is defined in
+  // migration files (see migrations/) rather than inline, so a fresh database
+  // runs every migration while an existing one runs only those not yet recorded
+  // in sqlite-up's schema_migrations table. Use the static open() factory, not
+  // new, so migrations and the legacy import complete before the manager is used.
+  private constructor(private memoryFilePath: string) {
     mkdirSync(path.dirname(this.memoryFilePath), { recursive: true });
-    const dbExisted = existsSync(this.memoryFilePath);
     this.db = new DatabaseSync(this.memoryFilePath);
+  }
+
+  static async open(memoryFilePath: string): Promise<KnowledgeGraphManager> {
+    const dbExisted = existsSync(memoryFilePath);
+    const manager = new KnowledgeGraphManager(memoryFilePath);
     try {
-      this.initialize(dbExisted);
+      manager.applyPragmas();
+      await manager.runMigrations();
+      if (!dbExisted) {
+        manager.importLegacyJsonl();
+      }
+      manager.assertIntegrity();
     } catch (error) {
       // Never leak the open connection if setup fails partway through (e.g. a
-      // corrupt file detected by assertIntegrity, or a bad legacy import).
+      // corrupt file detected by assertIntegrity, a bad legacy import, or a
+      // migration that fails to apply).
       try {
-        this.db.close();
+        manager.close();
       } catch {
         // Already failing; ignore secondary close errors.
       }
       throw error;
     }
+    return manager;
   }
 
-  private initialize(dbExisted: boolean): void {
-    // Operational pragmas. WAL is append-only and checksummed, which removes
-    // the torn-page failure mode of the rollback journal. synchronous=FULL
-    // keeps every committed transaction durable across power loss at the cost
-    // of write throughput; this server's request volume is low, so durability
-    // wins over speed. busy_timeout makes concurrent access wait instead of
-    // failing immediately with SQLITE_BUSY.
+  // Operational pragmas. WAL is append-only and checksummed, which removes
+  // the torn-page failure mode of the rollback journal. synchronous=FULL keeps
+  // every committed transaction durable across power loss at the cost of write
+  // throughput; this server's request volume is low, so durability wins over
+  // speed. busy_timeout makes concurrent access wait instead of failing
+  // immediately with SQLITE_BUSY. foreign_keys is enabled before any migration
+  // runs so FK enforcement is active for the whole lifetime. Applied inside
+  // open()'s try so a failure here still closes the connection.
+  private applyPragmas(): void {
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = FULL;
       PRAGMA busy_timeout = 5000;
-    `);
-    this.db.exec(`
       PRAGMA foreign_keys = ON;
-      CREATE TABLE IF NOT EXISTS entities (
-        name TEXT PRIMARY KEY,
-        entityType TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS observations (
-        entityName TEXT NOT NULL REFERENCES entities(name) ON DELETE CASCADE,
-        content TEXT NOT NULL,
-        PRIMARY KEY (entityName, content)
-      );
-      CREATE TABLE IF NOT EXISTS relations (
-        "from" TEXT NOT NULL,
-        "to" TEXT NOT NULL,
-        relationType TEXT NOT NULL,
-        PRIMARY KEY ("from", "to", relationType)
-      );
-      -- The observations PK (entityName, content) already covers entityName
-      -- lookups and the relations PK ("from", "to", relationType) already
-      -- covers "from" lookups, so the standalone indexes on those columns are
-      -- redundant write overhead; only the "to" index adds a new lookup path.
-      DROP INDEX IF EXISTS idx_observations_entityName;
-      DROP INDEX IF EXISTS idx_relations_from;
-      CREATE INDEX IF NOT EXISTS idx_relations_to ON relations("to");
-
-      -- FTS5 trigram search index over entity names, entity types, and
-      -- observation content, kept in sync by the triggers below. The trigram
-      -- tokenizer gives literal substring matching (the old LIKE '%q%'
-      -- semantics) at index speed. Two kinds of rows, disambiguated by the
-      -- unindexed kind column (stored, never matched):
-      --   kind='entity'      one row per entity, content ''
-      --   kind='observation' one row per observation
-      CREATE VIRTUAL TABLE IF NOT EXISTS search_index USING fts5(
-        name,
-        entityType,
-        content,
-        kind UNINDEXED,
-        tokenize = 'trigram'
-      );
-      CREATE TRIGGER IF NOT EXISTS search_index_entities_ai AFTER INSERT ON entities BEGIN
-        INSERT INTO search_index (name, entityType, content, kind) VALUES (new.name, new.entityType, '', 'entity');
-      END;
-      CREATE TRIGGER IF NOT EXISTS search_index_entities_ad AFTER DELETE ON entities BEGIN
-        DELETE FROM search_index WHERE name = old.name;
-      END;
-      CREATE TRIGGER IF NOT EXISTS search_index_entities_au AFTER UPDATE OF name, entityType ON entities BEGIN
-        UPDATE search_index SET name = new.name, entityType = new.entityType WHERE name = old.name AND kind = 'entity';
-      END;
-      CREATE TRIGGER IF NOT EXISTS search_index_observations_ai AFTER INSERT ON observations BEGIN
-        INSERT INTO search_index (name, entityType, content, kind) VALUES (new.entityName, '', new.content, 'observation');
-      END;
-      CREATE TRIGGER IF NOT EXISTS search_index_observations_ad AFTER DELETE ON observations BEGIN
-        DELETE FROM search_index WHERE name = old.entityName AND content = old.content AND kind = 'observation';
-      END;
-      CREATE TRIGGER IF NOT EXISTS search_index_observations_au AFTER UPDATE OF entityName, content ON observations BEGIN
-        UPDATE search_index SET name = new.entityName, content = new.content
-        WHERE name = old.entityName AND content = old.content AND kind = 'observation';
-      END;
     `);
-    // One-time backfill of the search index for databases created before it
-    // existed; later writes are mirrored into the index by the triggers above.
-    this.backfillSearchIndex();
-    if (!dbExisted) {
-      this.importLegacyJsonl();
-    }
-    this.assertIntegrity();
+  }
+
+  private async runMigrations(): Promise<void> {
+    await applyMigrations(this.db);
+  }
+
+  // ISO-8601 UTC timestamp for the created_at/updated_at provenance columns.
+  private now(): string {
+    return new Date().toISOString();
   }
 
   close(): void {
@@ -223,15 +186,16 @@ export class KnowledgeGraphManager {
       if (lines.length === 0) continue;
 
       const insertEntity = this.db.prepare(
-        "INSERT OR IGNORE INTO entities (name, entityType) VALUES (?, ?)",
+        "INSERT OR IGNORE INTO entities (name, entityType, created_at, updated_at) VALUES (?, ?, ?, ?)",
       );
       const insertObservation = this.db.prepare(
-        "INSERT OR IGNORE INTO observations (entityName, content) VALUES (?, ?)",
+        "INSERT OR IGNORE INTO observations (entityName, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
       );
       const insertRelation = this.db.prepare(
-        'INSERT OR IGNORE INTO relations ("from", "to", relationType) VALUES (?, ?, ?)',
+        'INSERT OR IGNORE INTO relations ("from", "to", relationType, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
       );
 
+      const now = this.now();
       let entities = 0;
       let relations = 0;
       this.db.exec("BEGIN");
@@ -239,13 +203,13 @@ export class KnowledgeGraphManager {
         for (const line of lines) {
           const item = JSON.parse(line);
           if (item.type === "entity") {
-            insertEntity.run(item.name, item.entityType);
+            insertEntity.run(item.name, item.entityType, now, now);
             for (const observation of item.observations ?? []) {
-              insertObservation.run(item.name, observation);
+              insertObservation.run(item.name, observation, now, now);
             }
             entities++;
           } else if (item.type === "relation") {
-            insertRelation.run(item.from, item.to, item.relationType);
+            insertRelation.run(item.from, item.to, item.relationType, now, now);
             relations++;
           }
         }
@@ -259,26 +223,6 @@ export class KnowledgeGraphManager {
       );
       return;
     }
-  }
-
-  // One-time backfill of the FTS5 search index for databases that predate it.
-  // Guarded by PRAGMA user_version so it runs only once per database; the
-  // marker is set in the same transaction as the backfill, so a crash leaves
-  // the database clean for a retry on the next open.
-  private backfillSearchIndex(): void {
-    const { user_version } = this.db.prepare("PRAGMA user_version").get() as {
-      user_version: number;
-    };
-    if (user_version >= 1) return;
-    this.transaction(() => {
-      this.db.exec(`
-        INSERT INTO search_index (name, entityType, content, kind)
-          SELECT e.name, e.entityType, '', 'entity' FROM entities e;
-        INSERT INTO search_index (name, entityType, content, kind)
-          SELECT o.entityName, '', o.content, 'observation' FROM observations o;
-      `);
-      this.db.exec("PRAGMA user_version = 1");
-    });
   }
 
   private loadEntities(names?: string[]): Entity[] {
@@ -339,17 +283,18 @@ export class KnowledgeGraphManager {
 
   async createEntities(entities: Entity[]): Promise<Entity[]> {
     const insertEntity = this.db.prepare(
-      "INSERT OR IGNORE INTO entities (name, entityType) VALUES (?, ?)",
+      "INSERT OR IGNORE INTO entities (name, entityType, created_at, updated_at) VALUES (?, ?, ?, ?)",
     );
     const insertObservation = this.db.prepare(
-      "INSERT OR IGNORE INTO observations (entityName, content) VALUES (?, ?)",
+      "INSERT OR IGNORE INTO observations (entityName, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
     );
     return this.transaction(() => {
       const newEntities: Entity[] = [];
       for (const entity of entities) {
-        if (insertEntity.run(entity.name, entity.entityType).changes > 0) {
+        const now = this.now();
+        if (insertEntity.run(entity.name, entity.entityType, now, now).changes > 0) {
           for (const observation of entity.observations) {
-            insertObservation.run(entity.name, observation);
+            insertObservation.run(entity.name, observation, now, now);
           }
           newEntities.push(entity);
         }
@@ -360,12 +305,16 @@ export class KnowledgeGraphManager {
 
   async createRelations(relations: Relation[]): Promise<Relation[]> {
     const insertRelation = this.db.prepare(
-      'INSERT OR IGNORE INTO relations ("from", "to", relationType) VALUES (?, ?, ?)',
+      'INSERT OR IGNORE INTO relations ("from", "to", relationType, created_at, updated_at) VALUES (?, ?, ?, ?, ?)',
     );
     return this.transaction(() => {
       const newRelations: Relation[] = [];
       for (const relation of relations) {
-        if (insertRelation.run(relation.from, relation.to, relation.relationType).changes > 0) {
+        const now = this.now();
+        if (
+          insertRelation.run(relation.from, relation.to, relation.relationType, now, now).changes >
+          0
+        ) {
           newRelations.push(relation);
         }
       }
@@ -378,16 +327,17 @@ export class KnowledgeGraphManager {
   ): Promise<{ entityName: string; addedObservations: string[] }[]> {
     const findEntity = this.db.prepare("SELECT name FROM entities WHERE name = ?");
     const insertObservation = this.db.prepare(
-      "INSERT OR IGNORE INTO observations (entityName, content) VALUES (?, ?)",
+      "INSERT OR IGNORE INTO observations (entityName, content, created_at, updated_at) VALUES (?, ?, ?, ?)",
     );
     return this.transaction(() => {
       const results = observations.map((o) => {
         if (!findEntity.get(o.entityName)) {
           throw new Error(`Entity with name ${o.entityName} not found`);
         }
+        const now = this.now();
         const addedObservations: string[] = [];
         for (const content of o.contents) {
-          if (insertObservation.run(o.entityName, content).changes > 0) {
+          if (insertObservation.run(o.entityName, content, now, now).changes > 0) {
             addedObservations.push(content);
           }
         }
@@ -859,7 +809,7 @@ export function registerKnowledgeGraphSubscriptions(server: McpServer) {
 
 async function main() {
   MEMORY_FILE_PATH = await ensureMemoryFilePath();
-  knowledgeGraphManager = new KnowledgeGraphManager(MEMORY_FILE_PATH);
+  knowledgeGraphManager = await KnowledgeGraphManager.open(MEMORY_FILE_PATH);
   registerKnowledgeGraphResource(server, knowledgeGraphManager);
   registerKnowledgeGraphSubscriptions(server);
 

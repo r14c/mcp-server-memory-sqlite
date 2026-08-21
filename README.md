@@ -57,7 +57,7 @@ Example:
 ## Storage
 
 The knowledge graph is stored in a local SQLite database using Node's built-in
-`node:sqlite` module — no native dependencies, requires Node.js >= 22.13. The
+`node:sqlite` module — no native dependencies, requires Node.js >= 24. The
 database contains three tables:
 
 - `entities` — `name` (primary key) and `entityType`
@@ -333,7 +333,7 @@ Follow these steps for each interaction:
 
 ## Building
 
-The server uses Node's built-in `node:sqlite` module, which requires Node.js >= 22.13.
+The server uses Node's built-in `node:sqlite` module, which requires Node.js >= 24.
 
 Docker:
 
@@ -341,7 +341,7 @@ Docker:
 docker build -t mcp/memory .
 ```
 
-For Awareness: a prior mcp/memory volume contains an index.js file that could be overwritten by the new container. If you are using a docker volume for storage, delete the old docker volume's `index.js` file before starting the new container.
+For Awareness: the Docker command above persists the server in a named volume mounted over `/app/dist`. A volume created by a prior image shadows the new container's `/app/dist`, including the compiled schema migrations at `/app/dist/migrations`; the server then fails to start with a "Failed to load migrations" error. If you use a docker volume for storage, delete the old volume (or at least its contents) before starting the new container so the fresh code and migrations are used.
 
 ## License
 

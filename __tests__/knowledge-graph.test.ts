@@ -15,7 +15,7 @@ describe("KnowledgeGraphManager", () => {
       path.dirname(fileURLToPath(import.meta.url)),
       `test-memory-${Date.now()}.db`,
     );
-    manager = new KnowledgeGraphManager(testFilePath);
+    manager = await KnowledgeGraphManager.open(testFilePath);
   });
 
   afterEach(async () => {
@@ -357,7 +357,7 @@ describe("KnowledgeGraphManager", () => {
       ]);
 
       // Reopen the same database: backfill must not run again
-      const manager2 = new KnowledgeGraphManager(testFilePath);
+      const manager2 = await KnowledgeGraphManager.open(testFilePath);
       const db = new DatabaseSync(testFilePath, { readOnly: true });
       // 1 entity row (content '') + 2 observation rows
       expect(db.prepare("SELECT count(*) c FROM search_index").get().c).toBe(3);
@@ -389,7 +389,7 @@ describe("KnowledgeGraphManager", () => {
         ].join("\n"),
       );
 
-      const importManager = new KnowledgeGraphManager(dbPath);
+      const importManager = await KnowledgeGraphManager.open(dbPath);
       const result = await importManager.searchNodes("golf");
       expect(result.entities.map((e) => e.name)).toEqual(["Golf"]);
 
@@ -450,13 +450,19 @@ describe("KnowledgeGraphManager", () => {
       `);
       db.close();
 
-      const reopened = new KnowledgeGraphManager(oldPath);
+      const reopened = await KnowledgeGraphManager.open(oldPath);
       const result = await reopened.searchNodes("programming");
       expect(result.entities.map((e) => e.name)).toEqual(["Alice"]);
       reopened.close();
 
       const db2 = new DatabaseSync(oldPath, { readOnly: true });
-      expect(db2.prepare("PRAGMA user_version").get().user_version).toBe(1);
+      // Both migrations are recorded, proving the pre-search-index database
+      // was upgraded in place (the backfill that populated search_index ran).
+      const applied = db2.prepare("SELECT name FROM schema_migrations ORDER BY name").all();
+      expect(applied.map((r) => r.name)).toEqual([
+        "001_initial_schema.ts",
+        "002_add_timestamps.ts",
+      ]);
       // 2 entity rows + 3 observation rows
       expect(db2.prepare("SELECT count(*) c FROM search_index").get().c).toBe(5);
       db2.close();
@@ -545,7 +551,7 @@ describe("KnowledgeGraphManager", () => {
       ]);
 
       // Create new manager instance with same file path
-      const manager2 = new KnowledgeGraphManager(testFilePath);
+      const manager2 = await KnowledgeGraphManager.open(testFilePath);
       const graph = await manager2.readGraph();
 
       expect(graph.entities).toHaveLength(1);
@@ -584,7 +590,7 @@ describe("KnowledgeGraphManager", () => {
       await manager.createRelations([{ from: "Alice", to: "Bob", relationType: "knows" }]);
 
       // Create new manager instance to force reload from the database
-      const manager2 = new KnowledgeGraphManager(testFilePath);
+      const manager2 = await KnowledgeGraphManager.open(testFilePath);
       const graph = await manager2.readGraph();
 
       // Verify loaded entities don't have type field
@@ -614,7 +620,7 @@ describe("KnowledgeGraphManager", () => {
       await manager.createRelations([{ from: "Alice", to: "Alice", relationType: "self" }]);
 
       // Create new manager instance to force reload from file
-      const manager2 = new KnowledgeGraphManager(testFilePath);
+      const manager2 = await KnowledgeGraphManager.open(testFilePath);
       const result = await manager2.searchNodes("Alice");
 
       // Verify search results don't have type field
@@ -636,7 +642,7 @@ describe("KnowledgeGraphManager", () => {
       await manager.createRelations([{ from: "Alice", to: "Bob", relationType: "knows" }]);
 
       // Create new manager instance to force reload from file
-      const manager2 = new KnowledgeGraphManager(testFilePath);
+      const manager2 = await KnowledgeGraphManager.open(testFilePath);
       const result = await manager2.openNodes(["Alice", "Bob"]);
 
       // Verify open results don't have type field
@@ -684,7 +690,7 @@ describe("KnowledgeGraphManager", () => {
         ].join("\n"),
       );
 
-      const migrationManager = new KnowledgeGraphManager(dbPath);
+      const migrationManager = await KnowledgeGraphManager.open(dbPath);
       const graph = await migrationManager.readGraph();
 
       expect(graph.entities).toHaveLength(2);
@@ -720,7 +726,7 @@ describe("KnowledgeGraphManager", () => {
         ].join("\n"),
       );
 
-      const migrationManager = new KnowledgeGraphManager(dbPath);
+      const migrationManager = await KnowledgeGraphManager.open(dbPath);
       const graph = await migrationManager.readGraph();
       expect(graph.entities).toHaveLength(1);
       expect(graph.entities[0].name).toBe("Bob");
@@ -739,7 +745,7 @@ describe("KnowledgeGraphManager", () => {
       const dbPath = `${base}.db`;
 
       // Pre-populate the database
-      const preManager = new KnowledgeGraphManager(dbPath);
+      const preManager = await KnowledgeGraphManager.open(dbPath);
       await preManager.createEntities([
         { name: "Existing", entityType: "person", observations: ["from db"] },
       ]);
@@ -759,7 +765,7 @@ describe("KnowledgeGraphManager", () => {
       );
 
       // Reopen: migration must not run because the database already exists
-      const reopenManager = new KnowledgeGraphManager(dbPath);
+      const reopenManager = await KnowledgeGraphManager.open(dbPath);
       const graph = await reopenManager.readGraph();
       expect(graph.entities).toHaveLength(1);
       expect(graph.entities[0].name).toBe("Existing");
@@ -779,7 +785,7 @@ describe("KnowledgeGraphManager", () => {
 
       await fs.writeFile(jsonlPath, "\n\n");
 
-      const migrationManager = new KnowledgeGraphManager(dbPath);
+      const migrationManager = await KnowledgeGraphManager.open(dbPath);
       const graph = await migrationManager.readGraph();
       expect(graph.entities).toHaveLength(0);
 
