@@ -32,6 +32,7 @@ export class KnowledgeGraphManager {
         manager.importLegacyJsonl();
       }
       manager.assertIntegrity();
+      manager.vacuumIfNeeded();
     } catch (error) {
       // Never leak the open connection if setup fails partway through (e.g. a
       // corrupt file detected by assertIntegrity, a bad legacy import, or a
@@ -94,6 +95,25 @@ export class KnowledgeGraphManager {
     const { quick_check } = this.db.prepare("PRAGMA quick_check").get() as { quick_check: string };
     if (quick_check !== "ok") {
       throw new Error(`SQLite quick_check failed for ${this.memoryFilePath}: ${quick_check}`);
+    }
+  }
+
+  // Reclaim free pages (left behind by deletes and by migration table rebuilds)
+  // once per boot, after migrations and the integrity check have run. VACUUM
+  // rewrites the whole database file, so it only pays off when the freelist is
+  // non-empty; gating on freelist_count keeps a steady-state boot (nothing
+  // deleted, no pending migration) from paying the rewrite cost for nothing.
+  // Startup latency is the trade-off, but vacuuming here beats vacuuming on
+  // shutdown: a crash between a shutdown VACUUM and process exit could leave
+  // the database mid-rewrite, and it would also delay teardown while the
+  // client waits. Fail-fast like the rest of open(): a failed VACUUM (e.g.
+  // ENOSPC on the temp file) is a disk problem the server cannot recover from.
+  private vacuumIfNeeded(): void {
+    const { freelist_count } = this.db
+      .prepare("PRAGMA freelist_count")
+      .get() as { freelist_count: number };
+    if (freelist_count > 0) {
+      this.db.exec("VACUUM");
     }
   }
 

@@ -661,6 +661,45 @@ describe("KnowledgeGraphManager", () => {
     });
   });
 
+  describe("boot vacuum", () => {
+    it("reclaims free pages left by deletes when the database is reopened", async () => {
+      // Bloat the database so the deletes free whole pages (a small store's
+      // rows share pages, so deleting a few leaves the freelist empty).
+      await manager.createEntities(
+        Array.from({ length: 10 }, (_, i) => ({
+          name: `VacuumMe${i}`,
+          entityType: "person",
+          observations: [String(i).repeat(2000)],
+        })),
+      );
+      await manager.createEntities([
+        { name: "KeepMe", entityType: "person", observations: ["survives the vacuum"] },
+      ]);
+      await manager.deleteEntities(Array.from({ length: 10 }, (_, i) => `VacuumMe${i}`));
+      manager.close();
+
+      // Before the reopen, the deleted entities' pages sit on the freelist.
+      const before = new DatabaseSync(testFilePath, { readOnly: true });
+      const freelistBefore = before.prepare("PRAGMA freelist_count").get().freelist_count;
+      before.close();
+      expect(freelistBefore).toBeGreaterThan(0);
+
+      // Reopening runs the boot vacuum, draining the freelist...
+      const reopened = await KnowledgeGraphManager.open(testFilePath);
+      const graph = await reopened.readGraph();
+      expect(graph.entities.map((e) => e.name)).toEqual(["KeepMe"]);
+      reopened.close();
+
+      // ...while the surviving data is intact.
+      const after = new DatabaseSync(testFilePath, { readOnly: true });
+      const freelistAfter = after.prepare("PRAGMA freelist_count").get().freelist_count;
+      const keepCount = after.prepare("SELECT count(*) c FROM entities").get().c;
+      after.close();
+      expect(freelistAfter).toBe(0);
+      expect(keepCount).toBe(1);
+    });
+  });
+
   describe("provenance", () => {
     it("stamps source/session from the MCP layer onto created rows", async () => {
       await manager.createEntities(

@@ -24,6 +24,28 @@ async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("Knowledge Graph MCP Server running on stdio");
+
+  // Close the database cleanly on termination, whichever way it comes. close()
+  // folds the WAL into the main file (wal_checkpoint) and refreshes query-plan
+  // statistics (optimize); without this wiring the -wal/-shm sidecars are
+  // abandoned on every exit. close() is synchronous, so it is safe to run from
+  // a signal handler, and the guard makes the handlers idempotent (a SIGTERM
+  // racing stdin close must not close the database twice). Signals exit
+  // immediately; stdin close just closes the manager and lets the process
+  // drain naturally so any pending stdout writes flush first.
+  let closed = false;
+  const closeManager = () => {
+    if (closed) return;
+    closed = true;
+    manager.close();
+  };
+  const shutdown = () => {
+    closeManager();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+  process.stdin.on("close", closeManager);
 }
 
 main().catch((error) => {
