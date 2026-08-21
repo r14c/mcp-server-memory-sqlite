@@ -519,7 +519,7 @@ const RelationSchema = z.object({
   relationType: z.string().describe("The type of the relation"),
 });
 
-// The server instance and tools exposed to Claude
+// The server instance and tools exposed to MCP clients
 const server = new McpServer({
   name: "memory-server",
   version: "0.7.0",

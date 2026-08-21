@@ -1,6 +1,6 @@
 # Knowledge Graph Memory Server
 
-A basic implementation of persistent memory using a local knowledge graph. This lets Claude remember information about the user across chats.
+A basic implementation of persistent memory using a local knowledge graph. This lets AI assistants remember information about the user across chats.
 
 Published on npm as [`@modelcontextprotocol/server-memory`](https://www.npmjs.com/package/@modelcontextprotocol/server-memory).
 
@@ -166,11 +166,11 @@ contents on first start.
   - Returns the same shape as `read_graph` (entities and relations)
   - Mutation tools (`create_entities`, `create_relations`, `add_observations`, `delete_entities`, `delete_observations`, `delete_relations`) emit `notifications/resources/updated` for this URI, so subscribed clients see live changes
 
-# Usage with Claude Desktop
+# Usage with MCP clients
 
 ### Setup
 
-Add this to your claude_desktop_config.json:
+Add this to your `mcp.json`:
 
 #### Docker
 
@@ -179,7 +179,7 @@ Add this to your claude_desktop_config.json:
   "mcpServers": {
     "memory": {
       "command": "docker",
-      "args": ["run", "-i", "-v", "claude-memory:/app/dist", "--rm", "mcp/memory"]
+      "args": ["run", "-i", "-v", "memory-data:/app/dist", "--rm", "mcp/memory"]
     }
   }
 }
@@ -250,15 +250,9 @@ On Windows, use:
   it is treated as a legacy JSONL memory file: the database is created at the
   sibling `.db` path and the JSONL contents are imported on first start.
 
-# VS Code Installation Instructions
+## Install Instructions
 
-For quick installation, use one of the one-click installation buttons below:
-
-[![Install with NPX in VS Code](https://img.shields.io/badge/VS_Code-NPM-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=memory&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40modelcontextprotocol%2Fserver-memory%22%5D%7D) [![Install with NPX in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-NPM-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=memory&config=%7B%22command%22%3A%22npx%22%2C%22args%22%3A%5B%22-y%22%2C%22%40modelcontextprotocol%2Fserver-memory%22%5D%7D&quality=insiders)
-
-[![Install with Docker in VS Code](https://img.shields.io/badge/VS_Code-Docker-0098FF?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=memory&config=%7B%22command%22%3A%22docker%22%2C%22args%22%3A%5B%22run%22%2C%22-i%22%2C%22-v%22%2C%22claude-memory%3A%2Fapp%2Fdist%22%2C%22--rm%22%2C%22mcp%2Fmemory%22%5D%7D) [![Install with Docker in VS Code Insiders](https://img.shields.io/badge/VS_Code_Insiders-Docker-24bfa5?style=flat-square&logo=visualstudiocode&logoColor=white)](https://insiders.vscode.dev/redirect/mcp/install?name=memory&config=%7B%22command%22%3A%22docker%22%2C%22args%22%3A%5B%22run%22%2C%22-i%22%2C%22-v%22%2C%22claude-memory%3A%2Fapp%2Fdist%22%2C%22--rm%22%2C%22mcp%2Fmemory%22%5D%7D&quality=insiders)
-
-For manual installation, you can configure the MCP server using one of these methods:
+You can configure the MCP server using one of these methods:
 
 **Method 1: User Configuration (Recommended)**
 Add the configuration to your user-level MCP configuration file. Open the Command Palette (`Ctrl + Shift + P`) and run `MCP: Open User Configuration`. This will open your user `mcp.json` file where you can add the server configuration.
@@ -301,7 +295,7 @@ On Windows, use:
   "servers": {
     "memory": {
       "command": "docker",
-      "args": ["run", "-i", "-v", "claude-memory:/app/dist", "--rm", "mcp/memory"]
+      "args": ["run", "-i", "-v", "memory-data:/app/dist", "--rm", "mcp/memory"]
     }
   }
 }
@@ -311,7 +305,7 @@ On Windows, use:
 
 The prompt for utilizing memory depends on the use case. Changing the prompt will help the model determine the frequency and types of memories created.
 
-Here is an example prompt for chat personalization. You could use this prompt in the "Custom Instructions" field of a [Claude.ai Project](https://www.anthropic.com/news/projects).
+Here is an example prompt for chat personalization. You can use this prompt as a system prompt for your AI assistant.
 
 ```
 Follow these steps for each interaction:
@@ -341,12 +335,12 @@ Follow these steps for each interaction:
 
 ## Building
 
-The server uses Node's built-in `node:sqlite` module, which requires Node.js
+The server uses Node's built-in `node:sqlite` module, which requires Node.js >= 22.13.
 
-> = 22.13. Docker:
+Docker:
 
 ```sh
-docker build -t mcp/memory -f src/memory/Dockerfile .
+docker build -t mcp/memory .
 ```
 
 For Awareness: a prior mcp/memory volume contains an index.js file that could be overwritten by the new container. If you are using a docker volume for storage, delete the old docker volume's `index.js` file before starting the new container.

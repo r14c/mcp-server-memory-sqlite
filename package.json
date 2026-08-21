@@ -1,7 +1,7 @@
 {
   "name": "@modelcontextprotocol/server-memory",
   "version": "0.7.0",
-  "description": "MCP server for enabling memory for Claude through a knowledge graph",
+  "description": "MCP server for enabling memory for AI assistants through a knowledge graph",
   "homepage": "https://modelcontextprotocol.io",
   "bugs": "https://github.com/modelcontextprotocol/servers/issues",
   "license": "SEE LICENSE IN LICENSE",
