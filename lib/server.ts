@@ -6,6 +6,7 @@ import {
 import { z } from "zod";
 import type { KnowledgeGraphManager } from "./manager.js";
 import type { Provenance } from "./types.js";
+import pkg from "../package.json" with { type: "json" };
 
 // Zod schemas for entities and relations.
 const EntitySchema = z.object({
@@ -73,7 +74,7 @@ export function registerKnowledgeGraphSubscriptions(server: McpServer) {
 export function buildServer(manager: KnowledgeGraphManager): McpServer {
   const server = new McpServer({
     name: "memory-server",
-    version: "0.8.0",
+    version: pkg.version,
   });
 
   // Notify subscribers that the knowledge graph resource changed. No-op when
