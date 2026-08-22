@@ -18,7 +18,7 @@ inverse relations are materialized on write.
 - `observations(entityName, content, PK(entityName, content))` — FK to entities.
 - `relations(from, to, relationType, PK(from, to, relationType))` — `from`/`to`
   FK to `entities(name) ON DELETE CASCADE`, declared `DEFERRABLE INITIALLY
-  DEFERRED` (migrations 005 + 006). The deferred declaration moves the FK
+DEFERRED` (migrations 005 + 006). The deferred declaration moves the FK
   check from statement end to the enclosing transaction's COMMIT, so within
   one transaction a relation may be inserted before its endpoint entity
   exists; a genuinely dangling edge still fails at COMMIT and rolls back the

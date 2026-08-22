@@ -109,9 +109,9 @@ export class KnowledgeGraphManager {
   // client waits. Fail-fast like the rest of open(): a failed VACUUM (e.g.
   // ENOSPC on the temp file) is a disk problem the server cannot recover from.
   private vacuumIfNeeded(): void {
-    const { freelist_count } = this.db
-      .prepare("PRAGMA freelist_count")
-      .get() as { freelist_count: number };
+    const { freelist_count } = this.db.prepare("PRAGMA freelist_count").get() as {
+      freelist_count: number;
+    };
     if (freelist_count > 0) {
       this.db.exec("VACUUM");
     }
