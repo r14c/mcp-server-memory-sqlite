@@ -1,6 +1,7 @@
 # Knowledge Graph Memory Server
 
-A basic implementation of persistent memory using a local knowledge graph. This lets AI assistants remember information about the user across chats.
+A basic implementation of persistent memory using a local knowledge graph. This
+lets AI assistants remember information about the user across chats.
 
 ## Core Concepts
 
@@ -24,7 +25,8 @@ Example:
 
 ### Relations
 
-Relations define directed connections between entities. They are always stored in active voice and describe how entities interact or relate to each other.
+Relations define directed connections between entities. They are always stored
+in active voice and describe how entities interact or relate to each other.
 
 Example:
 
@@ -50,7 +52,11 @@ Example:
 ```json
 {
   "entityName": "Jaime_Chicharra",
-  "observations": ["Speaks fluent Spanish", "Graduated in 2019", "Prefers morning meetings"]
+  "observations": [
+    "Speaks fluent Spanish",
+    "Graduated in 2019",
+    "Prefers morning meetings"
+  ]
 }
 ```
 
@@ -65,22 +71,27 @@ database contains three tables:
   `entityName`; removed automatically when the entity is deleted
 - `relations` — `from`, `to`, and `relationType` (primary key across all three)
 
-All mutation operations run inside transactions, so the graph is never left in
-a half-written state.
+All mutation operations run inside transactions, so the graph is never left in a
+half-written state.
 
 ### Migrating from JSONL
 
 Versions before 0.7.0 stored the graph as a JSONL document (`memory.jsonl`). On
 first start with an empty database, the server automatically imports entities
 and relations from a legacy JSONL file next to the database (e.g. `memory.jsonl`
-or `memory.json` next to `memory.db`) and logs what it imported. The legacy
-file is left in place as a backup.
+or `memory.json` next to `memory.db`) and logs what it imported. The legacy file
+is left in place as a backup.
 
 If `MEMORY_FILE_PATH` still points at a `.jsonl`/`.json` file, the server
-redirects the database to the sibling `.db` path and imports the legacy
-contents on first start.
+redirects the database to the sibling `.db` path and imports the legacy contents
+on first start.
 
 ## API
+
+this MCP server is designed as a drop-in replacement for
+[mcp-server-memory](https://www.npmjs.com/package/@modelcontextprotocol/server-memory).
+we do slightly bend some tools semantric so we can use a stricter schema than
+the jsonl file, but our intention is to match the upstream tool call signatures.
 
 ### Tools
 
@@ -162,7 +173,10 @@ contents on first start.
   - The full knowledge graph as a readable MCP Resource
   - MIME type: `application/json`
   - Returns the same shape as `read_graph` (entities and relations)
-  - Mutation tools (`create_entities`, `create_relations`, `add_observations`, `delete_entities`, `delete_observations`, `delete_relations`) emit `notifications/resources/updated` for this URI, so subscribed clients see live changes
+  - Mutation tools (`create_entities`, `create_relations`, `add_observations`,
+    `delete_entities`, `delete_observations`, `delete_relations`) emit
+    `notifications/resources/updated` for this URI, so subscribed clients see
+    live changes
 
 # Usage with MCP clients
 
@@ -252,13 +266,17 @@ On Windows, use:
 
 You can configure the MCP server using one of these methods:
 
-**Method 1: User Configuration (Recommended)**
-Add the configuration to your user-level MCP configuration file. Open the Command Palette (`Ctrl + Shift + P`) and run `MCP: Open User Configuration`. This will open your user `mcp.json` file where you can add the server configuration.
+**Method 1: User Configuration (Recommended)** Add the configuration to your
+user-level MCP configuration file. Open the Command Palette (`Ctrl + Shift + P`)
+and run `MCP: Open User Configuration`. This will open your user `mcp.json` file
+where you can add the server configuration.
 
-**Method 2: Workspace Configuration**
-Alternatively, you can add the configuration to a file called `.vscode/mcp.json` in your workspace. This will allow you to share the configuration with others.
+**Method 2: Workspace Configuration** Alternatively, you can add the
+configuration to a file called `.vscode/mcp.json` in your workspace. This will
+allow you to share the configuration with others.
 
-> For more details about MCP configuration in VS Code, see the [official VS Code MCP documentation](https://code.visualstudio.com/docs/copilot/customization/mcp-servers).
+> For more details about MCP configuration in VS Code, see the
+> [official VS Code MCP documentation](https://code.visualstudio.com/docs/copilot/customization/mcp-servers).
 
 #### NPX
 
@@ -301,9 +319,11 @@ On Windows, use:
 
 ### System Prompt
 
-The prompt for utilizing memory depends on the use case. Changing the prompt will help the model determine the frequency and types of memories created.
+The prompt for utilizing memory depends on the use case. Changing the prompt
+will help the model determine the frequency and types of memories created.
 
-Here is an example prompt for chat personalization. You can use this prompt as a system prompt for your AI assistant.
+Here is an example prompt for chat personalization. You can use this prompt as a
+system prompt for your AI assistant.
 
 ```
 Follow these steps for each interaction:
@@ -333,7 +353,9 @@ Follow these steps for each interaction:
 
 ## Building
 
-The server uses Node's built-in `node:sqlite` module, which requires Node.js >= 24.
+The server uses Node's built-in `node:sqlite` module, which requires Node.js
+
+> = 24.
 
 Docker:
 
@@ -341,8 +363,17 @@ Docker:
 docker build -t mcp/memory .
 ```
 
-For Awareness: the Docker command above persists the server in a named volume mounted over `/app/dist`. A volume created by a prior image shadows the new container's `/app/dist`, including the compiled schema migrations at `/app/dist/migrations`; the server then fails to start with a "Failed to load migrations" error. If you use a docker volume for storage, delete the old volume (or at least its contents) before starting the new container so the fresh code and migrations are used.
+For Awareness: the Docker command above persists the server in a named volume
+mounted over `/app/dist`. A volume created by a prior image shadows the new
+container's `/app/dist`, including the compiled schema migrations at
+`/app/dist/migrations`; the server then fails to start with a "Failed to load
+migrations" error. If you use a docker volume for storage, delete the old volume
+(or at least its contents) before starting the new container so the fresh code
+and migrations are used.
 
 ## License
 
-This MCP server is licensed under the MIT License. This means you are free to use, modify, and distribute the software, subject to the terms and conditions of the MIT License. For more details, please see the LICENSE file in the project repository.
+This MCP server is licensed under the MIT License. This means you are free to
+use, modify, and distribute the software, subject to the terms and conditions of
+the MIT License. For more details, please see the LICENSE file in the project
+repository.
