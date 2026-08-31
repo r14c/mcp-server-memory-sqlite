@@ -6,6 +6,7 @@ import {
 import { z } from "zod";
 import type { KnowledgeGraphManager } from "./manager.js";
 import type { Provenance } from "./types.js";
+import { curatedToolResponse, responseMaxBytes } from "./curate.js";
 import pkg from "../package.json" with { type: "json" };
 
 // Zod schemas for entities and relations.
@@ -307,10 +308,7 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
     },
     async () => {
       const graph = await manager.readGraph();
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(graph, null, 2) }],
-        structuredContent: { ...graph },
-      };
+      return curatedToolResponse(graph, responseMaxBytes());
     },
   );
 
@@ -340,10 +338,9 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
     },
     async ({ query }) => {
       const graph = await manager.searchNodes(query);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(graph, null, 2) }],
-        structuredContent: { ...graph },
-      };
+      // Prefer observations matching the query so a truncated search response
+      // keeps the most relevant facts.
+      return curatedToolResponse(graph, responseMaxBytes(), query);
     },
   );
 
@@ -369,10 +366,7 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
     },
     async ({ names }) => {
       const graph = await manager.openNodes(names);
-      return {
-        content: [{ type: "text" as const, text: JSON.stringify(graph, null, 2) }],
-        structuredContent: { ...graph },
-      };
+      return curatedToolResponse(graph, responseMaxBytes());
     },
   );
 

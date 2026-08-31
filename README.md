@@ -262,6 +262,55 @@ On Windows, use:
   it is treated as a legacy JSONL memory file: the database is created at the
   sibling `.db` path and the JSONL contents are imported on first start.
 
+### Large responses: server-side curation
+
+`search_nodes`, `read_graph`, and `open_nodes` return the *full* graph of
+matches — entities with all their observations, plus every relation touching
+them (the upstream drop-in contract). On a realistic graph the serialized tool
+result is large: 50–100 KiB per search on a live graph. Some MCP clients bound
+the tool results they expose to the model: the pi coding agent's adapter
+(`pi-mcp-adapter`) replaces any tool result whose JSON exceeds its
+`detailsMaxBytes` (default **16 KiB**) with an `{ omitted: true }` summary that
+has no `entities`/`relations` keys — so on the mcpScript/worker call path a
+large search appeared to return "no results".
+
+To keep responses usable, this server **curates** graph responses: the result
+is deep-truncated so the serialized tool result fits within the same budget the
+adapter enforces by default. Truncation preserves the top-level
+`{ entities, relations }` shape and is applied in stages — observation text
+length, then observations per entity, then relations, then entities — keeping
+the head of each list and, for `search_nodes`, preferring observations that
+match the query. When data was cut, the response carries a `truncated` field
+with the byte budget and the counts dropped (entities / observations /
+relations, plus a flag when observation text was shortened). Results that
+already fit pass through unchanged.
+
+The budget is configurable:
+
+- `MEMORY_RESPONSE_MAX_BYTES` — max serialized tool-result size in bytes
+  (default `16384`, matching pi-mcp-adapter's `detailsMaxBytes` default; `0`
+  disables curation).
+
+Caveats:
+
+- Truncation is lossy by design; the SQLite database is always the source of
+  truth. Narrower `search_nodes` queries, or `open_nodes` on fewer names,
+  return more of the graph.
+- Budgets below a few hundred bytes cannot fit even the most aggressively
+  trimmed response (one entity, one short observation); the smallest possible
+  result is delivered regardless.
+- If you raise the client-side cap (pi: `settings.outputGuard.detailsMaxBytes`
+  in `mcp.json` — note that setting is global for all servers), raise
+  `MEMORY_RESPONSE_MAX_BYTES` to match, or results are truncated more than the
+  client would allow.
+- The `truncated` key is additive to the frozen upstream
+  `{ entities, relations }` schema and appears only when data was dropped.
+
+The behavior is pinned by `__tests__/curation.test.ts` (hermetic),
+`__tests__/output-guard.test.ts` (hermetic), and
+`__tests__/pi-adapter-output-guard.integration.test.ts` (against the real
+adapter, skipped when it is not installed).
+
 ## Install Instructions
 
 You can configure the MCP server using one of these methods:
