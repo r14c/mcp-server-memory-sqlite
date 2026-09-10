@@ -3,11 +3,13 @@
 MCP server exposing a knowledge-graph memory (entities, relations, observations)
 as tools and a resource. A fork of the Model Context Protocol reference memory
 server, backed by SQLite via `node:sqlite` (requires Node >= 24) instead
-of an in-memory JSONL document. The tool surface (nine tools + the
-`memory://knowledge-graph` resource, with their schemas and shapes) is frozen
-to match upstream, but behavior diverges deliberately for correctness:
-dangling relations are rejected, entity names are case-insensitive, and
-inverse relations are materialized on write.
+of an in-memory JSONL document. Upstream's nine tools keep their upstream
+signatures — a caller written against upstream works unchanged — and this fork
+adds a tenth (`update_observations`) plus extra response fields where
+upstream's shape makes the graph hard to work with. Behavior diverges
+deliberately for correctness: dangling relations are rejected, entity names are
+case-insensitive, inverse relations are materialized on write, deletes report
+what matched, and relation endpoints come back as `neighbors`.
 
 ## Data model
 
@@ -32,8 +34,9 @@ DEFERRED` (migrations 005 + 006). The deferred declaration moves the FK
   consumer.
 - `created_at` / `updated_at` — TEXT ISO-8601 UTC provenance columns on
   `entities`, `observations`, and `relations`, stamped by the application on
-  insert (`new Date().toISOString()`). Nothing updates rows in place yet, so
-  `updated_at` equals `created_at` until in-place mutation is introduced.
+  insert (`new Date().toISOString()`). Observations are the one thing updated in
+  place (via `update_observations`), so their `updated_at` can exceed
+  `created_at`; every other row still has them equal.
 - `source` / `session` — nullable TEXT provenance columns on the same three
   tables, captured from the MCP layer: `source` is the client name from the
   `initialize` handshake (`server.server.getClientVersion()?.name`), `session`
@@ -79,7 +82,7 @@ through the triggers.
 
 - `index.ts` — entry point; re-exports the public surface and runs `main()`.
 - `lib/manager.ts` — `KnowledgeGraphManager` (SQLite operations).
-- `lib/server.ts` — `buildServer` + the nine tool registrations, the resource, and subscriptions.
+- `lib/server.ts` — `buildServer` + the ten tool registrations, the resource, and subscriptions.
 - `lib/migrate.ts` — sqlite-up migration runner.
 - `lib/types.ts` / `lib/ontology.ts` / `lib/paths.ts` — types, relation vocabulary, path resolution.
 
@@ -91,14 +94,21 @@ through the triggers.
 
 ## Gotchas
 
-- Response curation is **opt-in and off by default**: by default the graph tools
-  return the full result and the client bounds it (pi's adapter replaces an
-  oversized result with a summary carrying a `fullResultPath` spill file, so
-  nothing is unreachable). `MEMORY_RESPONSE_MAX_BYTES=<bytes>` enables in-band
-  curation at that budget — bounded and readable, but lossy with no way back to
-  the dropped data. A curated response declares `truncated` (optional) in the
-  graph tools' `outputSchema`; emitting it undeclared made strict clients reject
-  every curated response.
+- `update_observations` is the only in-place mutation: it UPDATEs the
+  observation row, so `created_at` survives and `updated_at` moves (elsewhere
+  `updated_at` still equals `created_at`). It is addressed by exact content and
+  throws on an absent match, on an unknown entity, or on a replacement that
+  already exists on that entity (including a replacement identical to the
+  match, which would otherwise report a no-op as an edit). The batch is atomic.
+- Relation endpoints outside the requested/matched set come back as `neighbors`
+  on `search_nodes` and `open_nodes`: the far endpoints of the returned
+  relations, deduped, in rowid order, empty when the result set is closed.
+  `read_graph` loads every entity, so its `neighbors` is always empty.
+- A delete reports what matched — `deletedEntities`,
+  `results[].deletedObservations`, `deletedRelations`, plus a "Deleted N of M
+  requested" message — and stays idempotent (a target that is already gone is
+  not an error). The materialized inverse is removed only when the requested
+  edge matched, and is never reported as a separate deletion.
 
 - `node:sqlite` must have FTS5 with the trigram tokenizer; the server fails at
   startup otherwise. Verified on nixpkgs `nodejs-slim-24.19.0` (SQLite

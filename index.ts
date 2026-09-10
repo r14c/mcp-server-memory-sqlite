@@ -14,7 +14,15 @@ export {
   registerKnowledgeGraphSubscriptions,
 } from "./lib/server.js";
 export { ensureMemoryFilePath, defaultMemoryPath } from "./lib/paths.js";
-export type { Entity, Relation, KnowledgeGraph, Provenance } from "./lib/types.js";
+export type {
+  DeleteEntitiesResult,
+  DeleteObservationsResult,
+  Entity,
+  KnowledgeGraph,
+  Provenance,
+  Relation,
+  UpdateObservationsResult,
+} from "./lib/types.js";
 
 async function main() {
   const memoryFilePath = await ensureMemoryFilePath();

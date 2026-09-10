@@ -33,6 +33,7 @@ describe("knowledge-graph resource", () => {
     const fakeGraph = {
       entities: [{ name: "Alice", entityType: "person", observations: ["engineer"] }],
       relations: [{ from: "Alice", to: "Acme", relationType: "works_at" }],
+      neighbors: [],
     };
     const manager = {
       readGraph: vi.fn().mockResolvedValue(fakeGraph),

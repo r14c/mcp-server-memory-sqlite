@@ -20,7 +20,7 @@ const OBSERVATION_COUNT = 8;
 const OBSERVATION_WORDS = 10;
 
 /** One observation of realistic length (a few hundred chars). */
-export function realisticObservation(seed: number, tag = "widget"): string {
+function realisticObservation(seed: number, tag = "widget"): string {
   const filler = "lorem ipsum dolor sit amet consectetur adipiscing elit "
     .repeat(OBSERVATION_WORDS)
     .trim();
@@ -71,7 +71,8 @@ export function serializeSearchResult(graph: { entities: unknown[]; relations: u
  * the result is replaced with an { omitted: true } summary that has no
  * entities/relations keys — which is what made search_nodes look "flaky" to
  * mcpScript consumers. Mirrors the real guard so the hermetic suite documents
- * the contract that the (pending) deep-truncation fix must preserve.
+ * the bound the server deliberately leaves to the client: an oversized reply is
+ * spilled to a file whose path comes back, so nothing is unreachable.
  */
 export function guardDecision(
   result: unknown,

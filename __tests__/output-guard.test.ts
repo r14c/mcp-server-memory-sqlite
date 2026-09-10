@@ -23,9 +23,9 @@ import {
 // summary that has no entities/relations keys, so callers see "no results".
 //
 // These tests pin the server-side behavior (full graph, large result) and
-// document the guard's decision contract — the thing the pending deep
-// truncation fix in pi-mcp-adapter must change (keep the top-level
-// { entities, relations } shape instead of replacing the whole result).
+// document the guard's decision contract. The server does not trim: the guard's
+// replacement carries fullResultPath, so the raw result stays reachable, and a
+// server-side truncation would be the only unrecoverable bound.
 describe("search result size vs. pi-mcp-adapter output guard", () => {
   let manager: KnowledgeGraphManager;
   let testFilePath: string;
@@ -109,13 +109,13 @@ describe("search result size vs. pi-mcp-adapter output guard", () => {
   });
 
   it("small results pass through the guard unchanged", async () => {
-    await manager.createEntities([
-      { name: "Zed", entityType: "person", observations: ["tiny"] },
-    ]);
+    await manager.createEntities([{ name: "Zed", entityType: "person", observations: ["tiny"] }]);
     const toolResult = serializeSearchResult(await manager.searchNodes("zed"));
 
     const { replaced, mcpResult } = guardDecision(toolResult, DETAILS_MAX_BYTES);
     expect(replaced).toBe(false);
-    expect((mcpResult as { structuredContent: { entities: unknown[] } }).structuredContent.entities).toHaveLength(1);
+    expect(
+      (mcpResult as { structuredContent: { entities: unknown[] } }).structuredContent.entities,
+    ).toHaveLength(1);
   });
 });

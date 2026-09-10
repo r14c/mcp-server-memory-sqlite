@@ -11,16 +11,15 @@ import {
   serializeSearchResult,
   STOPGAP_DETAILS_MAX_BYTES,
 } from "./guard-fixture.js";
-import { curateGraph } from "../lib/curate.js";
 
 // Integration test against the REAL pi-mcp-adapter output guard, confirming
-// the "search_nodes flaky" diagnosis and its server-side fix: an uncurated
-// realistic search result is larger than the guard's default detailsMaxBytes,
-// so guardMcpOutput replaces details.mcpResult with an { omitted: true }
-// summary that has no entities/relations keys (what mcpScript consumers saw
-// as "no results"); after server-side curation (lib/curate.ts) the same
-// result fits under the default cap and passes through with entities/relations
-// intact. Raising the cap via the documented stopgap also keeps the result
+// the "search_nodes flaky" diagnosis: an uncurated realistic search result is
+// larger than the guard's default detailsMaxBytes, so guardMcpOutput replaces
+// details.mcpResult with an { omitted: true } summary that has no
+// entities/relations keys (what mcpScript consumers saw as "no results"). The
+// raw result is not lost — the summary carries a fullResultPath spill file —
+// which is why the server leaves the bound to the client instead of trimming
+// in-band. Raising the cap via the documented stopgap also keeps the result
 // intact.
 //
 // The adapter is vendored under the pi agent npm dir (not a dependency of this
@@ -80,9 +79,9 @@ describe.skipIf(!available)("pi-mcp-adapter output guard (integration)", () => {
     }
   });
 
-  it("replaces raw (uncurated) search results over the default detailsMaxBytes with an omitted summary (no entities/relations)", async () => {
-    // Pre-curation path: this is what the guard does to oversized results and
-    // why server-side curation (next test) exists.
+  it("replaces raw search results over the default detailsMaxBytes with an omitted summary (no entities/relations)", async () => {
+    // What the guard does to an oversized result: the payload is replaced, but
+    // it stays recoverable through the spill file.
     const toolResult = serializeSearchResult(await manager.searchNodes("widget"));
 
     const guarded = await guardMcpOutput(toolResult.content, { rawMcpResult: toolResult });
@@ -96,24 +95,6 @@ describe.skipIf(!available)("pi-mcp-adapter output guard (integration)", () => {
     expect(typeof summary.fullResultPath).toBe("string");
     // The raw tool result is recoverable from the spill file.
     expect((summary.fullResultPath as string).startsWith(os.tmpdir())).toBe(true);
-  });
-
-  it("curated search results fit under the real guard's default cap (no replacement, entities/relations intact)", async () => {
-    const graph = await manager.searchNodes("widget");
-    // Curation is opt-in, so pass the budget explicitly: the adapter's default cap.
-    const curated = curateGraph(graph, DEFAULT_MCP_DETAILS_MAX_BYTES);
-    const toolResult = serializeSearchResult(curated);
-
-    // The server-side curation guarantees the real guard measures it under the cap.
-    expect(Buffer.byteLength(JSON.stringify(toolResult), "utf8")).toBeLessThanOrEqual(
-      DEFAULT_MCP_DETAILS_MAX_BYTES,
-    );
-
-    const guarded = await guardMcpOutput(toolResult.content, { rawMcpResult: toolResult });
-    expect(guarded.mcpResult).toBe(toolResult);
-    expect(
-      (toolResult.structuredContent as { entities: unknown[] }).entities.length,
-    ).toBeGreaterThan(0);
   });
 
   it("raising detailsMaxBytes (the documented stopgap) keeps entities/relations intact", async () => {

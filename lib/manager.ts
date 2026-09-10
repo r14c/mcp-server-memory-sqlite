@@ -3,7 +3,26 @@ import path from "path";
 import { DatabaseSync } from "node:sqlite";
 import { applyMigrations } from "./migrate.js";
 import { inverseOf } from "./ontology.js";
-import type { Entity, KnowledgeGraph, Provenance, Relation } from "./types.js";
+import type {
+  DeleteEntitiesResult,
+  DeleteObservationsResult,
+  Entity,
+  KnowledgeGraph,
+  Provenance,
+  Relation,
+  UpdateObservationsResult,
+} from "./types.js";
+
+// node:sqlite reports constraint failures with an extended result code whose
+// low byte is SQLITE_CONSTRAINT (19): 1555 for a declared PRIMARY KEY (the
+// observations table) and 2067 for a UNIQUE index. Matching the family rather
+// than one code keeps this correct if the constraint is ever re-declared.
+const SQLITE_CONSTRAINT = 19;
+
+function isConstraintViolation(error: unknown): boolean {
+  const errcode = (error as { errcode?: unknown } | null)?.errcode;
+  return typeof errcode === "number" && (errcode & 0xff) === SQLITE_CONSTRAINT;
+}
 
 // The KnowledgeGraphManager contains all operations to interact with the
 // knowledge graph, backed by a SQLite database (node:sqlite, requires Node.js
@@ -281,12 +300,21 @@ export class KnowledgeGraphManager {
 
   private graphForEntityNames(names: string[]): KnowledgeGraph {
     if (names.length === 0) {
-      return { entities: [], relations: [] };
+      return { entities: [], relations: [], neighbors: [] };
     }
-    return {
-      entities: this.loadEntities(names),
-      relations: this.loadRelations(names),
-    };
+    const entities = this.loadEntities(names);
+    const relations = this.loadRelations(names);
+    // Far endpoints of those relations: nodes the caller would otherwise have
+    // to ask for by name. Only names missing from the result set count — an
+    // endpoint already in `entities` is not a frontier.
+    const known = new Set(entities.map((entity) => entity.name));
+    const frontier = new Set<string>();
+    for (const relation of relations) {
+      for (const endpoint of [relation.from, relation.to]) {
+        if (!known.has(endpoint)) frontier.add(endpoint);
+      }
+    }
+    return { entities, relations, neighbors: this.loadEntities([...frontier]) };
   }
 
   async createEntities(entities: Entity[], provenance?: Provenance): Promise<Entity[]> {
@@ -378,52 +406,155 @@ export class KnowledgeGraphManager {
     });
   }
 
-  async deleteEntities(entityNames: string[]): Promise<void> {
-    const deleteEntity = this.db.prepare("DELETE FROM entities WHERE name = ? COLLATE NOCASE");
-    this.transaction(() => {
+  // Replace an observation's text in place, addressed by its exact content.
+  // Upstream has no update verb, so an edit is a delete plus an add: two calls,
+  // non-atomic, and unverifiable. This is the missing verb. The row is UPDATEd
+  // rather than deleted and re-inserted, so created_at keeps the first-written
+  // time and updated_at records the edit; the search index follows through the
+  // observations UPDATE trigger. An absent match, an unknown entity, or a
+  // replacement that already exists on the entity (content is half the primary
+  // key) aborts the whole batch rather than half-applying it.
+  async updateObservations(
+    updates: { entityName: string; match: string; replacement: string }[],
+  ): Promise<UpdateObservationsResult[]> {
+    const updateObservation = this.db.prepare(
+      "UPDATE observations SET content = ?, updated_at = ? WHERE entityName = ? AND content = ?",
+    );
+    return this.transaction(() => {
+      return updates.map((update) => {
+        const entityName = this.resolveEntityName(update.entityName);
+        if (entityName === undefined) {
+          throw new Error(`Entity with name ${update.entityName} not found`);
+        }
+        // Replacing text with itself is not an edit: the UPDATE would match,
+        // report changes=1, and bump updated_at for content that never changed.
+        // It is also the one collision the UPDATE cannot detect, since it
+        // targets the row it is replacing.
+        if (update.replacement === update.match) {
+          throw new Error(
+            `Observation on ${entityName} already has that content: ${update.replacement}`,
+          );
+        }
+        let changes: number | bigint;
+        try {
+          changes = updateObservation.run(
+            update.replacement,
+            this.now(),
+            entityName,
+            update.match,
+          ).changes;
+        } catch (error) {
+          // A constraint violation here can only be the replacement colliding
+          // with an existing observation: content is half the primary key, and
+          // that is the table's only constraint. Anything else (busy, ENOSPC, a
+          // future schema problem) keeps its own error instead of being
+          // relabeled as a collision.
+          if (!isConstraintViolation(error)) throw error;
+          throw new Error(`Observation already exists on ${entityName}: ${update.replacement}`, {
+            cause: error,
+          });
+        }
+        if (changes === 0) {
+          throw new Error(`Observation not found on ${entityName}: ${update.match}`);
+        }
+        return { entityName, updatedObservations: [update.replacement] };
+      });
+    });
+  }
+
+  // Deletes stay idempotent (deleting something that is already gone is a
+  // no-op, not a failure) but report exactly what matched, so the caller can
+  // tell a completed edit from a typo instead of trusting a blanket success.
+  async deleteEntities(entityNames: string[]): Promise<DeleteEntitiesResult[]> {
+    // RETURNING hands back the stored casing, so one statement both deletes and
+    // reports the canonical name; a case-variant request still matches through
+    // COLLATE NOCASE. Relations and observations go with it by ON DELETE
+    // CASCADE.
+    const deleteEntity = this.db.prepare(
+      "DELETE FROM entities WHERE name = ? COLLATE NOCASE RETURNING name",
+    );
+    return this.transaction(() => {
+      const deleted: DeleteEntitiesResult[] = [];
       for (const name of entityNames) {
-        // Relations and observations are removed by ON DELETE CASCADE.
-        deleteEntity.run(name);
+        const row = deleteEntity.get(name) as { name: string } | undefined;
+        if (row !== undefined) deleted.push({ entityName: row.name });
       }
+      return deleted;
     });
   }
 
   async deleteObservations(
     deletions: { entityName: string; observations: string[] }[],
-  ): Promise<void> {
+  ): Promise<DeleteObservationsResult[]> {
+    // The name is resolved before deleting for two reasons: the stored casing is
+    // what the result should echo back, and the requested name may not exist at
+    // all — an unknown entity still reports which of its observations matched
+    // nothing, so the caller's request is echoed verbatim. Content is the other
+    // half of the primary key, so the match is exact rather than fuzzy.
     const deleteObservation = this.db.prepare(
-      "DELETE FROM observations WHERE entityName = ? COLLATE NOCASE AND content = ?",
+      "DELETE FROM observations WHERE entityName = ? AND content = ?",
     );
-    this.transaction(() => {
-      for (const deletion of deletions) {
+    return this.transaction(() =>
+      deletions.map((deletion) => {
+        const entityName = this.resolveEntityName(deletion.entityName) ?? deletion.entityName;
+        const deletedObservations: string[] = [];
         for (const observation of deletion.observations) {
-          deleteObservation.run(deletion.entityName, observation);
+          if (deleteObservation.run(entityName, observation).changes > 0) {
+            deletedObservations.push(observation);
+          }
         }
-      }
-    });
+        return { entityName, deletedObservations };
+      }),
+    );
   }
 
-  async deleteRelations(relations: Relation[]): Promise<void> {
+  async deleteRelations(relations: Relation[]): Promise<Relation[]> {
+    // RETURNING reports the stored endpoints, so the result names what was
+    // actually removed instead of echoing the request. COLLATE NOCASE keeps the
+    // lookup case-insensitive while the columns stay BINARY for the FK.
     const deleteRelation = this.db.prepare(
-      'DELETE FROM relations WHERE "from" = ? COLLATE NOCASE AND "to" = ? COLLATE NOCASE AND relationType = ?',
+      'DELETE FROM relations WHERE "from" = ? COLLATE NOCASE AND "to" = ? COLLATE NOCASE AND relationType = ? RETURNING "from", "to", relationType',
     );
-    this.transaction(() => {
+    const deleteByEndpoints = (
+      from: string,
+      to: string,
+      relationType: string,
+    ): Relation | undefined => {
+      const row = deleteRelation.get(from, to, relationType) as
+        | { from: string; to: string; relationType: string }
+        | undefined;
+      return row === undefined
+        ? undefined
+        : { from: row.from, to: row.to, relationType: row.relationType };
+    };
+    return this.transaction(() => {
+      const deleted: Relation[] = [];
       for (const relation of relations) {
-        deleteRelation.run(relation.from, relation.to, relation.relationType);
+        const row = deleteByEndpoints(relation.from, relation.to, relation.relationType);
+        // Nothing matched, so nothing to report and nothing to unpick: asking
+        // to delete an edge the graph does not have must not take its opposite
+        // with it.
+        if (row === undefined) continue;
+        deleted.push(row);
         // Keep the directional closure consistent: deleting one side of an
-        // inverse pair deletes the materialized inverse too.
-        const inverse = inverseOf(relation.relationType);
+        // inverse pair deletes the materialized inverse too. The inverse is not
+        // reported — it was never asked for and is not a separate edge.
+        const inverse = inverseOf(row.relationType);
         if (inverse !== undefined) {
-          deleteRelation.run(relation.to, relation.from, inverse);
+          deleteByEndpoints(row.to, row.from, inverse);
         }
       }
+      return deleted;
     });
   }
 
   async readGraph(): Promise<KnowledgeGraph> {
+    // Every entity is loaded, so no relation endpoint can be missing from
+    // `entities`: read_graph has no frontier by construction.
     return {
       entities: this.loadEntities(),
       relations: this.loadRelations(),
+      neighbors: [],
     };
   }
 

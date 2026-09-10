@@ -89,6 +89,14 @@ this MCP server is designed as a drop-in replacement for
 we do slightly bend some tools semantric so we can use a stricter schema than
 the jsonl file, but our intention is to match the upstream tool call signatures.
 
+A caller written against upstream keeps working: upstream's nine tools keep
+their names, inputs, and the response fields they read. On top of that we add
+fields and one verb where upstream's shape makes the graph hard to work with —
+relations come back with their far endpoints (see `neighbors`), deletes report
+what actually matched instead of a blanket success, and `update_observations`
+exists because upstream's edit is a delete plus an add: two calls, non-atomic,
+and unverifiable.
+
 ### Tools
 
 - **create_entities**
@@ -122,7 +130,8 @@ the jsonl file, but our intention is to match the upstream tool call signatures.
   - Remove entities and their relations
   - Input: `entityNames` (string[])
   - Cascading deletion of associated relations
-  - Silent operation if entity doesn't exist
+  - Returns `deletedEntities`: the canonical names that were actually removed
+  - Idempotent: names that do not exist are skipped, not an error
 
 - **delete_observations**
   - Remove specific observations from entities
@@ -130,7 +139,9 @@ the jsonl file, but our intention is to match the upstream tool call signatures.
     - Each object contains:
       - `entityName` (string): Target entity
       - `observations` (string[]): Observations to remove
-  - Silent operation if observation doesn't exist
+  - Returns `results`: per entity, the `deletedObservations` that actually
+    matched (`message` carries `deleted N of M requested`)
+  - Observation content is the primary key, so the match must be exact
 
 - **delete_relations**
   - Remove specific relations from the graph
@@ -139,12 +150,30 @@ the jsonl file, but our intention is to match the upstream tool call signatures.
       - `from` (string): Source entity name
       - `to` (string): Target entity name
       - `relationType` (string): Relationship type
-  - Silent operation if relation doesn't exist
+  - Returns `deletedRelations`: the edges that actually matched
+  - A materialized inverse is removed with its primary edge but not reported
+    as a separate deletion
+
+- **update_observations**
+  - Replace the text of existing observations in place
+  - Input: `updates` (array of objects)
+    - Each object contains:
+      - `entityName` (string): Entity holding the observation
+      - `match` (string): The exact current content to replace
+      - `replacement` (string): The new content
+  - Returns `updatedObservations` per entity
+  - The row is updated, not rewritten: `created_at` keeps the first-written
+    time and `updated_at` records the edit; the search index follows
+  - Fails the whole batch (no partial application) if a `match` is absent, if
+    the entity is unknown, or if `replacement` already exists on that entity —
+    including when `replacement` equals `match`, since replacing text with
+    itself is not an edit
 
 - **read_graph**
   - Read the entire knowledge graph
   - No input required
-  - Returns complete graph structure with all entities and relations
+  - Returns complete graph structure with all entities and relations. Every
+    entity is loaded, so there is no frontier: `neighbors` is always empty
 
 - **search_nodes**
   - Search for nodes based on query
@@ -153,26 +182,34 @@ the jsonl file, but our intention is to match the upstream tool call signatures.
     - Entity names
     - Entity types
     - Observation content
-  - Returns matching entities and their relations
+  - Returns matching entities, their relations, and the relations' far
+    endpoints as `neighbors`
 
 - **open_nodes**
   - Retrieve specific nodes by name
   - Input: `names` (string[])
   - Returns:
     - Requested entities
-    - Relations between requested entities
+    - Relations touching those entities
+    - `neighbors`: the far endpoints of those relations that were not requested
+      themselves, so one call returns a node and everything it points at
   - Silently skips non-existent nodes
+
+`search_nodes` and `open_nodes` return `neighbors` (deduped, in rowid order);
+the list is empty when a result set is closed, and `read_graph` — which loads
+every entity — always returns `[]`.
 
 ### Resources
 
 - **knowledge-graph** (`memory://knowledge-graph`)
   - The full knowledge graph as a readable MCP Resource
   - MIME type: `application/json`
-  - Returns the same shape as `read_graph` (entities and relations)
+  - Returns the same shape as `read_graph` (entities, relations, and an empty
+    `neighbors` list)
   - Mutation tools (`create_entities`, `create_relations`, `add_observations`,
-    `delete_entities`, `delete_observations`, `delete_relations`) emit
-    `notifications/resources/updated` for this URI, so subscribed clients see
-    live changes
+    `update_observations`, `delete_entities`, `delete_observations`,
+    `delete_relations`) emit `notifications/resources/updated` for this URI, so
+    subscribed clients see live changes
 
 # Usage with MCP clients
 
@@ -258,68 +295,36 @@ On Windows, use:
   it is treated as a legacy JSONL memory file: the database is created at the
   sibling `.db` path and the JSONL contents are imported on first start.
 
-### Large responses: curation is opt-in
+### Large responses: the server returns the full result
 
 `search_nodes`, `read_graph`, and `open_nodes` return the _full_ graph of
 matches — entities with all their observations, plus every relation touching
-them (the upstream drop-in contract). On a realistic graph the serialized tool
-result is large: 50–100 KiB per search on a live graph, and much more for the
-whole graph. Some MCP clients bound the tool results they expose to the model:
-the pi coding agent's adapter (`pi-mcp-adapter`) replaces any tool result whose
-JSON exceeds its `detailsMaxBytes` (default **16 KiB**) with an `{ omitted:
-true }` summary that has no `entities`/`relations` keys — so on the
-mcpScript/worker call path a large search appeared to return "no results".
+them and the far endpoints of those relations (`neighbors`). On a realistic
+graph the serialized tool result is large: 50–100 KiB per search on a live
+graph, and much more for the whole graph. Some MCP clients bound the tool
+results they expose to the model: the pi coding agent's adapter
+(`pi-mcp-adapter`) replaces any tool result whose JSON exceeds its
+`detailsMaxBytes` (default **16 KiB**) with an `{ omitted: true }` summary that
+has no `entities`/`relations` keys — so on the mcpScript/worker call path a
+large search appeared to return "no results".
 
-By default the server does **nothing** about this: it returns the full result
-and leaves the bound to the client. That is deliberate. The adapter's guard
-_spills_ an oversized result to a temp file (mode 0600) and returns a summary
-carrying `fullResultPath`, so the caller can still read everything — whereas a
-server-trimmed response is lossy with no way back to the dropped data. An
-unbounded reply is noisy; a bounded reply that silently drops half a board is
-worse.
+The server does **nothing** about this, deliberately: it returns the full
+result and leaves the bound to the client. The adapter's guard _spills_ an
+oversized result to a temp file (mode 0600) and returns a summary carrying
+`fullResultPath`, so the caller can still read everything — whereas a
+server-side trim is lossy with no way back to the dropped data. That bound also
+fails in a way the guard does not: a board is a single entity, so a
+trim keeps the head and the rest of it cannot be reached with a narrower query
+at all. An unbounded reply is noisy; a bounded reply that silently drops half a
+board is worse.
 
-Optionally, the server can **curate** graph responses instead: the result is
-deep-truncated so the serialized tool result fits within the adapter's default
-budget. Truncation preserves the top-level `{ entities, relations }` shape and
-is applied in stages — observation text length, then observations per entity,
-then relations, then entities — keeping the head of each list and, for
-`search_nodes`, preferring observations that match the query. When data was
-cut, the response carries a `truncated` field with the byte budget and the
-counts dropped (entities / observations / relations, plus a flag when
-observation text was shortened). Results that already fit pass through
-unchanged, and a response that fits drops the marker entirely.
+If a client's cap is too tight, raise it (pi: `settings.outputGuard.
+detailsMaxBytes` in `mcp.json` — note that setting is global for all servers),
+or read less per call: `open_nodes` on fewer names, a narrower `search_nodes`
+query, or `read_graph` piped somewhere the model does not have to hold all of
+it.
 
-Curation is a feature flag, **disabled by default**:
-
-- `MEMORY_RESPONSE_MAX_BYTES` — max serialized tool-result size in bytes.
-  Unset, `0`, or unparseable leaves curation off. A positive integer (set it to
-  the client's `detailsMaxBytes`) enables it at that budget.
-
-Caveats:
-
-- Truncation is lossy by design and the delivered response is the whole story —
-  the marker reports what was dropped but there is no out-of-band copy. The
-  SQLite database remains the source of truth: narrower `search_nodes` queries,
-  `open_nodes` on fewer names, or raising the budget (or disabling curation)
-  return more of the graph.
-- A curated response is in-band and bounded, which is friendlier to read than a
-  guard replacement plus a file path — that is the trade for giving up the
-  escape hatch.
-- Budgets below a few hundred bytes cannot fit even the most aggressively
-  trimmed response (one entity, one short observation); the smallest possible
-  result is delivered regardless.
-- If you raise the client-side cap (pi: `settings.outputGuard.detailsMaxBytes`
-  in `mcp.json` — note that setting is global for all servers) you can either
-  raise `MEMORY_RESPONSE_MAX_BYTES` to match, or leave curation off and let the
-  relaxed cap do the work.
-- The `truncated` key is additive to the frozen upstream
-  `{ entities, relations }` schema and appears only when data was dropped. It
-  is declared (optional) in the `outputSchema` of the three graph tools, so
-  clients that validate `structuredContent` against the advertised schema
-  accept curated results.
-
-The behavior is pinned by `__tests__/curation.test.ts` (hermetic),
-`__tests__/output-guard.test.ts` (hermetic),
+The behavior is pinned by `__tests__/output-guard.test.ts` (hermetic),
 `__tests__/pi-adapter-output-guard.integration.test.ts` (against the real
 adapter, skipped when it is not installed), and
 `__tests__/pi-client-output-schema.integration.test.ts` (against the real pi

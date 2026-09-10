@@ -5,8 +5,7 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { KnowledgeGraphManager } from "./manager.js";
-import type { Provenance } from "./types.js";
-import { curatedToolResponse, responseMaxBytes } from "./curate.js";
+import type { KnowledgeGraph, Provenance } from "./types.js";
 import pkg from "../package.json" with { type: "json" };
 
 // Zod schemas for entities and relations.
@@ -24,22 +23,16 @@ const RelationSchema = z.object({
   relationType: z.string().describe("The type of the relation"),
 });
 
-// Mirrors TruncationInfo in lib/curate.ts. The graph tools' outputSchema is
-// closed (zod emits `additionalProperties: false`), and curate.ts attaches
-// `truncated` to any response it had to trim — so the field must be declared
-// here or conformant clients reject the result.
-const TruncationInfoSchema = z
-  .object({
-    maxBytes: z.number().describe("The response budget the result was trimmed to fit"),
-    originalBytes: z.number().describe("Serialized size of the untrimmed tool result"),
-    resultBytes: z.number().describe("Serialized size of this trimmed tool result"),
-    entityCountDropped: z.number(),
-    observationCountDropped: z.number(),
-    relationCountDropped: z.number(),
-    observationTextTruncated: z.boolean(),
-  })
-  .optional()
-  .describe("Present only when the response was trimmed to fit the client's output budget");
+// Far endpoints of `relations` that are not in `entities`, so following an edge
+// does not need a second call. Declared in the graph tools' outputSchema
+// because zod emits `additionalProperties: false`: an undeclared response field
+// makes conformant clients reject the whole result.
+const NeighborsSchema = z
+  .array(EntitySchema)
+  .describe(
+    "Far endpoints of `relations` that are not in `entities`, so following an edge does not " +
+      "need a second call. Deduped, in rowid order; empty when the result set is closed.",
+  );
 
 export const RESOURCE_URI = "memory://knowledge-graph";
 
@@ -85,10 +78,14 @@ export function registerKnowledgeGraphSubscriptions(server: McpServer) {
   });
 }
 
-// Build the MCP server: register the nine tools, the knowledge-graph resource,
-// and the subscription capability. The tool surface (names, schemas, shapes)
-// is frozen to match upstream @modelcontextprotocol/server-memory; only the
-// storage layer differs.
+// Build the MCP server: register the ten tools, the knowledge-graph resource,
+// and the subscription capability. Upstream's nine tools keep their upstream
+// signatures — a caller written against upstream keeps working — while extra
+// response fields (neighbors, delete counts) and one added verb
+// (update_observations, since an edit as delete-plus-add is unverifiable) are
+// layered on top. Semantics may diverge where upstream's are misleading or
+// lossy: deletes report what matched, and relation endpoints come back with
+// the edges that name them.
 export function buildServer(manager: KnowledgeGraphManager): McpServer {
   const server = new McpServer({
     name: "memory-server",
@@ -109,6 +106,15 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
   const provenanceFrom = (extra: { sessionId?: string }): Provenance => ({
     source: server.server.getClientVersion()?.name,
     session: extra.sessionId,
+  });
+
+  // Every graph read returns the same shape: the matched entities, the
+  // relations touching them, and the far endpoints of those relations. The
+  // server returns the full result and leaves the bound to the client, which
+  // spills an oversized result to a file it hands back (see README).
+  const graphResponse = (graph: KnowledgeGraph) => ({
+    content: [{ type: "text" as const, text: JSON.stringify(graph, null, 2) }],
+    structuredContent: { ...graph },
   });
 
   // Register create_entities tool
@@ -222,6 +228,9 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       outputSchema: {
         success: z.boolean(),
         message: z.string(),
+        deletedEntities: z.array(
+          z.object({ entityName: z.string().describe("The canonical name that was removed") }),
+        ),
       },
       annotations: {
         readOnlyHint: false,
@@ -231,11 +240,15 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       },
     },
     async ({ entityNames }) => {
-      await manager.deleteEntities(entityNames);
+      const deleted = await manager.deleteEntities(entityNames);
       notifyGraphUpdated();
+      // Report what matched: the request stays idempotent (a name that is
+      // already gone is not an error), but the caller can tell a typo from a
+      // completed deletion instead of trusting a blanket success.
+      const message = `Deleted ${deleted.length} of ${entityNames.length} requested entities`;
       return {
-        content: [{ type: "text" as const, text: "Entities deleted successfully" }],
-        structuredContent: { success: true, message: "Entities deleted successfully" },
+        content: [{ type: "text" as const, text: message }],
+        structuredContent: { success: true, message, deletedEntities: deleted },
       };
     },
   );
@@ -257,6 +270,12 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       outputSchema: {
         success: z.boolean(),
         message: z.string(),
+        results: z.array(
+          z.object({
+            entityName: z.string(),
+            deletedObservations: z.array(z.string()),
+          }),
+        ),
       },
       annotations: {
         readOnlyHint: false,
@@ -266,11 +285,16 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       },
     },
     async ({ deletions }) => {
-      await manager.deleteObservations(deletions);
+      const deleted = await manager.deleteObservations(deletions);
       notifyGraphUpdated();
+      // The count is the point: upstream reports success whether or not the
+      // text matched, which made every edit a guess.
+      const total = deleted.reduce((sum, result) => sum + result.deletedObservations.length, 0);
+      const requested = deletions.reduce((sum, deletion) => sum + deletion.observations.length, 0);
+      const message = `Deleted ${total} of ${requested} requested observations`;
       return {
-        content: [{ type: "text" as const, text: "Observations deleted successfully" }],
-        structuredContent: { success: true, message: "Observations deleted successfully" },
+        content: [{ type: "text" as const, text: message }],
+        structuredContent: { success: true, message, results: deleted },
       };
     },
   );
@@ -287,6 +311,7 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       outputSchema: {
         success: z.boolean(),
         message: z.string(),
+        deletedRelations: z.array(RelationSchema),
       },
       annotations: {
         readOnlyHint: false,
@@ -296,11 +321,56 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       },
     },
     async ({ relations }) => {
-      await manager.deleteRelations(relations);
+      const deleted = await manager.deleteRelations(relations);
+      notifyGraphUpdated();
+      const message = `Deleted ${deleted.length} of ${relations.length} requested relations`;
+      return {
+        content: [{ type: "text" as const, text: message }],
+        structuredContent: { success: true, message, deletedRelations: deleted },
+      };
+    },
+  );
+
+  // Register update_observations tool
+  server.registerTool(
+    "update_observations",
+    {
+      title: "Update Observations",
+      description:
+        "Replace the text of existing observations in place, addressed by their exact current " +
+        "content. Upstream has no update verb, so an edit is a delete plus an add: two calls, " +
+        "non-atomic, and unverifiable. This fails loudly if the match is absent or the replacement " +
+        "already exists, and it keeps the observation's created_at while recording updated_at.",
+      inputSchema: {
+        updates: z.array(
+          z.object({
+            entityName: z.string().describe("The name of the entity holding the observation"),
+            match: z.string().describe("The exact current content of the observation to replace"),
+            replacement: z.string().describe("The new content"),
+          }),
+        ),
+      },
+      outputSchema: {
+        results: z.array(
+          z.object({
+            entityName: z.string(),
+            updatedObservations: z.array(z.string()),
+          }),
+        ),
+      },
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ updates }) => {
+      const result = await manager.updateObservations(updates);
       notifyGraphUpdated();
       return {
-        content: [{ type: "text" as const, text: "Relations deleted successfully" }],
-        structuredContent: { success: true, message: "Relations deleted successfully" },
+        content: [{ type: "text" as const, text: JSON.stringify(result, null, 2) }],
+        structuredContent: { results: result },
       };
     },
   );
@@ -315,7 +385,7 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       outputSchema: {
         entities: z.array(EntitySchema),
         relations: z.array(RelationSchema),
-        truncated: TruncationInfoSchema,
+        neighbors: NeighborsSchema,
       },
       annotations: {
         readOnlyHint: true,
@@ -325,8 +395,7 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       },
     },
     async () => {
-      const graph = await manager.readGraph();
-      return curatedToolResponse(graph, responseMaxBytes());
+      return graphResponse(await manager.readGraph());
     },
   );
 
@@ -335,7 +404,9 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
     "search_nodes",
     {
       title: "Search Nodes",
-      description: "Search for nodes in the knowledge graph based on a query",
+      description:
+        "Search for nodes in the knowledge graph based on a query. Relations come back with their " +
+        "far endpoints in `neighbors`, so one search shows the surrounding graph.",
       inputSchema: {
         query: z
           .string()
@@ -346,7 +417,7 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       outputSchema: {
         entities: z.array(EntitySchema),
         relations: z.array(RelationSchema),
-        truncated: TruncationInfoSchema,
+        neighbors: NeighborsSchema,
       },
       annotations: {
         readOnlyHint: true,
@@ -356,10 +427,7 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       },
     },
     async ({ query }) => {
-      const graph = await manager.searchNodes(query);
-      // Prefer observations matching the query so a truncated search response
-      // keeps the most relevant facts.
-      return curatedToolResponse(graph, responseMaxBytes(), query);
+      return graphResponse(await manager.searchNodes(query));
     },
   );
 
@@ -368,14 +436,16 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
     "open_nodes",
     {
       title: "Open Nodes",
-      description: "Open specific nodes in the knowledge graph by their names",
+      description:
+        "Open specific nodes in the knowledge graph by their names. Relations come back with their " +
+        "far endpoints in `neighbors`, so one call returns a node and everything it points at.",
       inputSchema: {
         names: z.array(z.string()).describe("An array of entity names to retrieve"),
       },
       outputSchema: {
         entities: z.array(EntitySchema),
         relations: z.array(RelationSchema),
-        truncated: TruncationInfoSchema,
+        neighbors: NeighborsSchema,
       },
       annotations: {
         readOnlyHint: true,
@@ -385,8 +455,7 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       },
     },
     async ({ names }) => {
-      const graph = await manager.openNodes(names);
-      return curatedToolResponse(graph, responseMaxBytes());
+      return graphResponse(await manager.openNodes(names));
     },
   );
 

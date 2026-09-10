@@ -190,6 +190,24 @@ describe("KnowledgeGraphManager", () => {
       const graph = await manager.readGraph();
       expect(graph.entities).toHaveLength(0);
     });
+
+    // Deleting stays idempotent, but the result says what actually matched:
+    // upstream reports success either way, which makes a typo look like a
+    // completed deletion.
+    it("should report the canonical names it actually deleted", async () => {
+      await manager.createEntities([
+        { name: "Alice", entityType: "person", observations: [] },
+        { name: "Bob", entityType: "person", observations: [] },
+      ]);
+
+      const deleted = await manager.deleteEntities(["alice", "Ghost", "Bob"]);
+
+      expect(deleted).toEqual([{ entityName: "Alice" }, { entityName: "Bob" }]);
+    });
+
+    it("should report nothing when the name does not exist", async () => {
+      expect(await manager.deleteEntities(["Ghost"])).toEqual([]);
+    });
   });
 
   describe("deleteObservations", () => {
@@ -218,6 +236,54 @@ describe("KnowledgeGraphManager", () => {
       const graph = await manager.readGraph();
       expect(graph.entities).toHaveLength(0);
     });
+
+    it("should report which requested observations matched", async () => {
+      await manager.createEntities([
+        {
+          name: "Alice",
+          entityType: "person",
+          observations: ["works at Acme Corp", "likes coffee"],
+        },
+      ]);
+
+      const results = await manager.deleteObservations([
+        { entityName: "Alice", observations: ["likes coffee", "never existed"] },
+      ]);
+
+      expect(results).toEqual([{ entityName: "Alice", deletedObservations: ["likes coffee"] }]);
+    });
+
+    it("should echo the requested name for a non-existent entity", async () => {
+      const results = await manager.deleteObservations([
+        { entityName: "Ghost", observations: ["anything"] },
+      ]);
+
+      expect(results).toEqual([{ entityName: "Ghost", deletedObservations: [] }]);
+    });
+
+    it("should resolve the entity name case-insensitively", async () => {
+      await manager.createEntities([
+        { name: "Alice", entityType: "person", observations: ["likes coffee"] },
+      ]);
+
+      const results = await manager.deleteObservations([
+        { entityName: "alice", observations: ["likes coffee"] },
+      ]);
+
+      expect(results).toEqual([{ entityName: "Alice", deletedObservations: ["likes coffee"] }]);
+    });
+
+    it("should keep the search index in step with deletions", async () => {
+      await manager.createEntities([
+        { name: "Alice", entityType: "person", observations: ["needle in a haystack"] },
+      ]);
+
+      await manager.deleteObservations([
+        { entityName: "Alice", observations: ["needle in a haystack"] },
+      ]);
+
+      expect((await manager.searchNodes("needle")).entities).toHaveLength(0);
+    });
   });
 
   describe("deleteRelations", () => {
@@ -238,6 +304,157 @@ describe("KnowledgeGraphManager", () => {
       expect(graph.relations).toHaveLength(1);
       expect(graph.relations[0].relationType).toBe("works_with");
     });
+
+    it("should report the relations it actually deleted", async () => {
+      await manager.createEntities([
+        { name: "Alice", entityType: "person", observations: [] },
+        { name: "Bob", entityType: "person", observations: [] },
+      ]);
+      await manager.createRelations([{ from: "Alice", to: "Bob", relationType: "knows" }]);
+
+      const deleted = await manager.deleteRelations([
+        { from: "alice", to: "Bob", relationType: "knows" },
+        { from: "Alice", to: "Bob", relationType: "never existed" },
+      ]);
+
+      // Only the matched edge is reported, and with canonical endpoint casing.
+      expect(deleted).toEqual([{ from: "Alice", to: "Bob", relationType: "knows" }]);
+    });
+
+    it("should not report the materialized inverse as a separate deletion", async () => {
+      await manager.createEntities([
+        { name: "Child", entityType: "thing", observations: [] },
+        { name: "Parent", entityType: "thing", observations: [] },
+      ]);
+      await manager.createRelations([{ from: "Child", to: "Parent", relationType: "part_of" }]);
+
+      const deleted = await manager.deleteRelations([
+        { from: "Child", to: "Parent", relationType: "part_of" },
+      ]);
+
+      expect(deleted).toEqual([{ from: "Child", to: "Parent", relationType: "part_of" }]);
+      expect((await manager.readGraph()).relations).toHaveLength(0);
+    });
+  });
+
+  describe("updateObservations", () => {
+    it("should replace an observation in place, keeping created_at and bumping updated_at", async () => {
+      await manager.createEntities([
+        { name: "Alice", entityType: "person", observations: ["status: TODO"] },
+      ]);
+      const beforeDb = new DatabaseSync(testFilePath, { readOnly: true });
+      const before = beforeDb
+        .prepare("SELECT content, created_at, updated_at FROM observations")
+        .get();
+      beforeDb.close();
+      // Timestamps are ISO-8601 with millisecond resolution; give the edit a
+      // later millisecond so a strict inequality is meaningful rather than
+      // racing the clock.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+
+      const results = await manager.updateObservations([
+        { entityName: "Alice", match: "status: TODO", replacement: "status: DONE" },
+      ]);
+
+      const db = new DatabaseSync(testFilePath, { readOnly: true });
+      const after = db.prepare("SELECT content, created_at, updated_at FROM observations").get();
+      const count = db.prepare("SELECT COUNT(*) AS n FROM observations").get();
+      db.close();
+
+      expect(results).toEqual([{ entityName: "Alice", updatedObservations: ["status: DONE"] }]);
+      // One row, updated rather than deleted and re-inserted.
+      expect(count).toMatchObject({ n: 1 });
+      expect(after.content).toBe("status: DONE");
+      expect(after.created_at).toBe(before.created_at);
+      expect(new Date(String(after.updated_at)).getTime()).toBeGreaterThan(
+        new Date(String(before.updated_at)).getTime(),
+      );
+    });
+
+    it("should move the search index to the new text", async () => {
+      await manager.createEntities([
+        { name: "Alice", entityType: "person", observations: ["status: TODO"] },
+      ]);
+
+      await manager.updateObservations([
+        { entityName: "Alice", match: "status: TODO", replacement: "status: DONE" },
+      ]);
+
+      expect((await manager.searchNodes("status: DONE")).entities.map((e) => e.name)).toEqual([
+        "Alice",
+      ]);
+      expect((await manager.searchNodes("status: TODO")).entities).toHaveLength(0);
+    });
+
+    it("should fail loudly when the match is absent", async () => {
+      await manager.createEntities([
+        { name: "Alice", entityType: "person", observations: ["status: TODO"] },
+      ]);
+
+      await expect(
+        manager.updateObservations([
+          { entityName: "Alice", match: "status: TYPO", replacement: "status: DONE" },
+        ]),
+      ).rejects.toThrow("Observation not found on Alice: status: TYPO");
+    });
+
+    it("should fail loudly when the entity does not exist", async () => {
+      await expect(
+        manager.updateObservations([
+          { entityName: "Ghost", match: "anything", replacement: "something" },
+        ]),
+      ).rejects.toThrow("Entity with name Ghost not found");
+    });
+
+    it("should refuse to collide with an existing observation", async () => {
+      await manager.createEntities([
+        {
+          name: "Alice",
+          entityType: "person",
+          observations: ["status: TODO", "status: DONE"],
+        },
+      ]);
+
+      await expect(
+        manager.updateObservations([
+          { entityName: "Alice", match: "status: TODO", replacement: "status: DONE" },
+        ]),
+      ).rejects.toThrow("Observation already exists on Alice: status: DONE");
+
+      const alice = (await manager.readGraph()).entities[0];
+      expect(alice.observations).toEqual(["status: TODO", "status: DONE"]);
+    });
+
+    it("should refuse a replacement identical to the match instead of reporting a no-op edit", async () => {
+      await manager.createEntities([
+        { name: "Alice", entityType: "person", observations: ["status: TODO"] },
+      ]);
+
+      await expect(
+        manager.updateObservations([
+          { entityName: "Alice", match: "status: TODO", replacement: "status: TODO" },
+        ]),
+      ).rejects.toThrow("Observation on Alice already has that content: status: TODO");
+    });
+
+    it("should apply a batch atomically", async () => {
+      await manager.createEntities([
+        { name: "Alice", entityType: "person", observations: ["status: TODO"] },
+        { name: "Bob", entityType: "person", observations: ["status: TODO"] },
+      ]);
+
+      await expect(
+        manager.updateObservations([
+          { entityName: "Alice", match: "status: TODO", replacement: "status: DONE" },
+          { entityName: "Bob", match: "status: TYPO", replacement: "status: DONE" },
+        ]),
+      ).rejects.toThrow("Observation not found on Bob");
+
+      // The first update in the batch is rolled back with the rest.
+      for (const entity of (await manager.readGraph()).entities) {
+        expect(entity.observations).toEqual(["status: TODO"]);
+      }
+    });
   });
 
   describe("readGraph", () => {
@@ -257,6 +474,19 @@ describe("KnowledgeGraphManager", () => {
       const graph = await manager.readGraph();
       expect(graph.entities).toHaveLength(1);
       expect(graph.relations).toHaveLength(1);
+    });
+
+    it("should report an empty frontier, since every endpoint is loaded", async () => {
+      await manager.createEntities([
+        { name: "Alice", entityType: "person", observations: [] },
+        { name: "Bob", entityType: "person", observations: [] },
+      ]);
+      await manager.createRelations([{ from: "Alice", to: "Bob", relationType: "knows" }]);
+
+      const graph = await manager.readGraph();
+
+      // No endpoint can be missing from `entities`, so there is nothing to add.
+      expect(graph.neighbors).toEqual([]);
     });
   });
 
@@ -322,6 +552,14 @@ describe("KnowledgeGraphManager", () => {
       const result = await manager.searchNodes("NonExistent");
       expect(result.entities).toHaveLength(0);
       expect(result.relations).toHaveLength(0);
+    });
+
+    it("should return the far endpoints of matched relations as neighbors", async () => {
+      const result = await manager.searchNodes("Alice");
+
+      expect(result.entities.map((e) => e.name)).toEqual(["Alice"]);
+      // Acme Corp does not match the query; it is reachable through the edge.
+      expect(result.neighbors.map((e) => e.name)).toEqual(["Acme Corp"]);
     });
   });
 
@@ -545,6 +783,56 @@ describe("KnowledgeGraphManager", () => {
       const result = await manager.openNodes([]);
       expect(result.entities).toHaveLength(0);
       expect(result.relations).toHaveLength(0);
+      expect(result.neighbors).toHaveLength(0);
+    });
+
+    // Following a relation used to need a second call: the response carried the
+    // edge but not the node it pointed at. Neighbors close that gap.
+    it("should return the far endpoints of its relations as neighbors", async () => {
+      const result = await manager.openNodes(["Alice"]);
+
+      expect(result.entities.map((e) => e.name)).toEqual(["Alice"]);
+      expect(result.neighbors.map((e) => e.name)).toEqual(["Bob"]);
+    });
+
+    it("should omit neighbors that were opened themselves", async () => {
+      const result = await manager.openNodes(["Alice", "Bob"]);
+
+      // Bob is requested; only Charlie is beyond the opened set.
+      expect(result.neighbors.map((e) => e.name)).toEqual(["Charlie"]);
+    });
+
+    it("should return no neighbors when the result set is closed", async () => {
+      const result = await manager.openNodes(["Alice", "Bob", "Charlie"]);
+
+      expect(result.neighbors).toEqual([]);
+    });
+
+    it("should collect distinct neighbors in rowid order rather than relation order", async () => {
+      // Relations name Charlie before Bob, and Bob is reached twice, so the
+      // frontier has to dedupe and then order by rowid (Bob, Charlie) rather
+      // than by the order the edges were written.
+      await manager.createRelations([
+        { from: "Alice", to: "Charlie", relationType: "knows" },
+        { from: "Alice", to: "Bob", relationType: "works_with" },
+      ]);
+
+      const result = await manager.openNodes(["Alice"]);
+
+      expect(result.relations).toHaveLength(3);
+      expect(result.neighbors.map((e) => e.name)).toEqual(["Bob", "Charlie"]);
+    });
+
+    it("should carry neighbor observations, not just names", async () => {
+      await manager.createEntities([
+        { name: "Card", entityType: "card", observations: ["status: TODO"] },
+      ]);
+      await manager.createRelations([{ from: "Alice", to: "Card", relationType: "owns" }]);
+
+      const result = await manager.openNodes(["Alice"]);
+
+      const card = result.neighbors.find((entity) => entity.name === "Card");
+      expect(card?.observations).toEqual(["status: TODO"]);
     });
   });
 
@@ -1026,6 +1314,47 @@ describe("KnowledgeGraphManager", () => {
       const migrationManager = await KnowledgeGraphManager.open(dbPath);
       const graph = await migrationManager.readGraph();
       expect(graph.entities).toHaveLength(0);
+
+      migrationManager.close();
+      await fs.unlink(dbPath);
+      await fs.unlink(jsonlPath);
+    });
+
+    it("does not delete an inverse edge when the requested relation never matched", async () => {
+      const base = path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        `test-legacy-inverse-${Date.now()}`,
+      );
+      const jsonlPath = `${base}.jsonl`;
+      const dbPath = `${base}.db`;
+
+      // Legacy JSONL has no inverse materialization, so this file can hold
+      // Parent -contains-> Child without its declared opposite. Deleting the
+      // opposite by name must not take this edge with it.
+      await fs.writeFile(
+        jsonlPath,
+        [
+          JSON.stringify({ type: "entity", name: "Child", entityType: "thing", observations: [] }),
+          JSON.stringify({ type: "entity", name: "Parent", entityType: "thing", observations: [] }),
+          JSON.stringify({
+            type: "relation",
+            from: "Parent",
+            to: "Child",
+            relationType: "contains",
+          }),
+        ].join("\n"),
+      );
+
+      const migrationManager = await KnowledgeGraphManager.open(dbPath);
+      const deleted = await migrationManager.deleteRelations([
+        { from: "Child", to: "Parent", relationType: "part_of" },
+      ]);
+
+      // Nothing matched, so nothing is removed and nothing is reported.
+      expect(deleted).toEqual([]);
+      expect((await migrationManager.readGraph()).relations).toEqual([
+        { from: "Parent", to: "Child", relationType: "contains" },
+      ]);
 
       migrationManager.close();
       await fs.unlink(dbPath);
