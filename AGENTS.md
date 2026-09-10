@@ -97,10 +97,11 @@ through the triggers.
 - Behavior change vs. the old LIKE search: `%` and `_` in a query are literal
   on the indexed path (FTS5 phrase), not wildcards; the < 3-char LIKE fallback
   keeps wildcard behavior, so results for such queries can differ.
-- Importing `index.ts` / `dist/index.js` under vitest runs module-scope
-  `main()`, which opens and migrates the root scratch `memory.db` (gitignored)
-  and attempts a stdio connection. Harmless for tests, but the scratch database
-  is touched by every test run.
+- `index.ts` runs `main()` only under `if (import.meta.main)`, so importing the
+  package root is inert (tests import it for the re-exports without opening a
+  database or a stdio transport). The check needs Node >= 24.2.0 — see the
+  `engines` field; on older runtimes `import.meta.main` is undefined and the
+  server would silently never start.
 - The standalone indexes `idx_observations_entityName` and `idx_relations_from`
   are redundant — the observations PK `(entityName, content)` and the relations
   PK `("from","to",relationType)` already cover those prefix lookups — and are
