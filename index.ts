@@ -48,7 +48,16 @@ async function main() {
   process.stdin.on("close", closeManager);
 }
 
-main().catch((error) => {
-  console.error("Fatal error in main():", error);
-  process.exit(1);
-});
+// Run only when this module is the entry point (the installed bin, or `node
+// dist/index.js`). Importing the package root must not start a server: the
+// test suite imports it for the re-exports, and a module-scope main() would
+// open the scratch database and open a stdio transport in every test file —
+// concurrent workers then race on that database and main() rejects.
+// `import.meta.main` needs Node >= 24.2.0 (see package.json engines); on older
+// runtimes it is undefined and the server would silently never start.
+if (import.meta.main) {
+  main().catch((error) => {
+    console.error("Fatal error in main():", error);
+    process.exit(1);
+  });
+}
