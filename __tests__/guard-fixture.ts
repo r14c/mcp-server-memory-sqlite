@@ -1,4 +1,7 @@
-import { KnowledgeGraphManager } from "../index.js";
+// The class is used as a type only — importing the package root here would
+// execute the entry point's module-scope main() (and open the scratch
+// database) in every test file that pulls in this fixture.
+import type { KnowledgeGraphManager } from "../lib/manager.js";
 
 // pi-mcp-adapter's output-guard defaults (mcp-output-guard.ts):
 //   export const DEFAULT_MCP_DETAILS_MAX_BYTES = 16 * 1024;
@@ -18,7 +21,9 @@ const OBSERVATION_WORDS = 10;
 
 /** One observation of realistic length (a few hundred chars). */
 export function realisticObservation(seed: number, tag = "widget"): string {
-  const filler = "lorem ipsum dolor sit amet consectetur adipiscing elit ".repeat(OBSERVATION_WORDS).trim();
+  const filler = "lorem ipsum dolor sit amet consectetur adipiscing elit "
+    .repeat(OBSERVATION_WORDS)
+    .trim();
   return `${tag} note ${seed}: ${filler}`;
 }
 
@@ -33,7 +38,9 @@ export async function buildRealisticGraph(manager: KnowledgeGraphManager): Promi
     names.map((name, i) => ({
       name,
       entityType: "widget",
-      observations: Array.from({ length: OBSERVATION_COUNT }, (_, j) => realisticObservation(i * 10 + j)),
+      observations: Array.from({ length: OBSERVATION_COUNT }, (_, j) =>
+        realisticObservation(i * 10 + j),
+      ),
     })),
   );
   // A relation chain so the result carries relations with both endpoints in
@@ -79,7 +86,8 @@ export function guardDecision(
     rawBytes,
     mcpResult: {
       omitted: true,
-      reason: "Raw MCP result exceeded the details size limit and was replaced with this summary to keep session context bounded.",
+      reason:
+        "Raw MCP result exceeded the details size limit and was replaced with this summary to keep session context bounded.",
       isError: false,
       contentBlocks: 1,
       rawResultBytes: rawBytes,

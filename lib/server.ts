@@ -24,6 +24,23 @@ const RelationSchema = z.object({
   relationType: z.string().describe("The type of the relation"),
 });
 
+// Mirrors TruncationInfo in lib/curate.ts. The graph tools' outputSchema is
+// closed (zod emits `additionalProperties: false`), and curate.ts attaches
+// `truncated` to any response it had to trim — so the field must be declared
+// here or conformant clients reject the result.
+const TruncationInfoSchema = z
+  .object({
+    maxBytes: z.number().describe("The response budget the result was trimmed to fit"),
+    originalBytes: z.number().describe("Serialized size of the untrimmed tool result"),
+    resultBytes: z.number().describe("Serialized size of this trimmed tool result"),
+    entityCountDropped: z.number(),
+    observationCountDropped: z.number(),
+    relationCountDropped: z.number(),
+    observationTextTruncated: z.boolean(),
+  })
+  .optional()
+  .describe("Present only when the response was trimmed to fit the client's output budget");
+
 export const RESOURCE_URI = "memory://knowledge-graph";
 
 // Track which resource URIs the connected client has subscribed to, so we only
@@ -298,6 +315,7 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       outputSchema: {
         entities: z.array(EntitySchema),
         relations: z.array(RelationSchema),
+        truncated: TruncationInfoSchema,
       },
       annotations: {
         readOnlyHint: true,
@@ -328,6 +346,7 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       outputSchema: {
         entities: z.array(EntitySchema),
         relations: z.array(RelationSchema),
+        truncated: TruncationInfoSchema,
       },
       annotations: {
         readOnlyHint: true,
@@ -356,6 +375,7 @@ export function buildServer(manager: KnowledgeGraphManager): McpServer {
       outputSchema: {
         entities: z.array(EntitySchema),
         relations: z.array(RelationSchema),
+        truncated: TruncationInfoSchema,
       },
       annotations: {
         readOnlyHint: true,

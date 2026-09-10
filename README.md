@@ -52,11 +52,7 @@ Example:
 ```json
 {
   "entityName": "Jaime_Chicharra",
-  "observations": [
-    "Speaks fluent Spanish",
-    "Graduated in 2019",
-    "Prefers morning meetings"
-  ]
+  "observations": ["Speaks fluent Spanish", "Graduated in 2019", "Prefers morning meetings"]
 }
 ```
 
@@ -264,7 +260,7 @@ On Windows, use:
 
 ### Large responses: server-side curation
 
-`search_nodes`, `read_graph`, and `open_nodes` return the *full* graph of
+`search_nodes`, `read_graph`, and `open_nodes` return the _full_ graph of
 matches — entities with all their observations, plus every relation touching
 them (the upstream drop-in contract). On a realistic graph the serialized tool
 result is large: 50–100 KiB per search on a live graph. Some MCP clients bound
@@ -304,12 +300,17 @@ Caveats:
   `MEMORY_RESPONSE_MAX_BYTES` to match, or results are truncated more than the
   client would allow.
 - The `truncated` key is additive to the frozen upstream
-  `{ entities, relations }` schema and appears only when data was dropped.
+  `{ entities, relations }` schema and appears only when data was dropped. It
+  is declared (optional) in the `outputSchema` of the three graph tools, so
+  clients that validate `structuredContent` against the advertised schema
+  accept curated results.
 
 The behavior is pinned by `__tests__/curation.test.ts` (hermetic),
-`__tests__/output-guard.test.ts` (hermetic), and
+`__tests__/output-guard.test.ts` (hermetic),
 `__tests__/pi-adapter-output-guard.integration.test.ts` (against the real
-adapter, skipped when it is not installed).
+adapter, skipped when it is not installed), and
+`__tests__/pi-client-output-schema.integration.test.ts` (against the real pi
+client, likewise skipped).
 
 ## Install Instructions
 
