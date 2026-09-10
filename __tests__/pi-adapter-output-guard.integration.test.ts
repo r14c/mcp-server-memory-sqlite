@@ -6,8 +6,12 @@ import os from "os";
 import path from "path";
 import { fileURLToPath, pathToFileURL } from "url";
 import { KnowledgeGraphManager } from "../index.js";
-import { buildRealisticGraph, serializeSearchResult, STOPGAP_DETAILS_MAX_BYTES } from "./guard-fixture.js";
-import { curateGraph, DEFAULT_RESPONSE_MAX_BYTES } from "../lib/curate.js";
+import {
+  buildRealisticGraph,
+  serializeSearchResult,
+  STOPGAP_DETAILS_MAX_BYTES,
+} from "./guard-fixture.js";
+import { curateGraph } from "../lib/curate.js";
 
 // Integration test against the REAL pi-mcp-adapter output guard, confirming
 // the "search_nodes flaky" diagnosis and its server-side fix: an uncurated
@@ -31,7 +35,10 @@ const ADAPTER_DIR =
 const GUARD_SOURCE = path.join(ADAPTER_DIR, "mcp-output-guard.ts");
 const available = existsSync(GUARD_SOURCE);
 
-let guardMcpOutput: (content: unknown[], options: Record<string, unknown>) => Promise<Record<string, unknown>>;
+let guardMcpOutput: (
+  content: unknown[],
+  options: Record<string, unknown>,
+) => Promise<Record<string, unknown>>;
 let DEFAULT_MCP_DETAILS_MAX_BYTES: number;
 
 beforeAll(async () => {
@@ -93,7 +100,8 @@ describe.skipIf(!available)("pi-mcp-adapter output guard (integration)", () => {
 
   it("curated search results fit under the real guard's default cap (no replacement, entities/relations intact)", async () => {
     const graph = await manager.searchNodes("widget");
-    const curated = curateGraph(graph, DEFAULT_RESPONSE_MAX_BYTES);
+    // Curation is opt-in, so pass the budget explicitly: the adapter's default cap.
+    const curated = curateGraph(graph, DEFAULT_MCP_DETAILS_MAX_BYTES);
     const toolResult = serializeSearchResult(curated);
 
     // The server-side curation guarantees the real guard measures it under the cap.
@@ -103,7 +111,9 @@ describe.skipIf(!available)("pi-mcp-adapter output guard (integration)", () => {
 
     const guarded = await guardMcpOutput(toolResult.content, { rawMcpResult: toolResult });
     expect(guarded.mcpResult).toBe(toolResult);
-    expect((toolResult.structuredContent as { entities: unknown[] }).entities.length).toBeGreaterThan(0);
+    expect(
+      (toolResult.structuredContent as { entities: unknown[] }).entities.length,
+    ).toBeGreaterThan(0);
   });
 
   it("raising detailsMaxBytes (the documented stopgap) keeps entities/relations intact", async () => {

@@ -258,47 +258,60 @@ On Windows, use:
   it is treated as a legacy JSONL memory file: the database is created at the
   sibling `.db` path and the JSONL contents are imported on first start.
 
-### Large responses: server-side curation
+### Large responses: curation is opt-in
 
 `search_nodes`, `read_graph`, and `open_nodes` return the _full_ graph of
 matches — entities with all their observations, plus every relation touching
 them (the upstream drop-in contract). On a realistic graph the serialized tool
-result is large: 50–100 KiB per search on a live graph. Some MCP clients bound
-the tool results they expose to the model: the pi coding agent's adapter
-(`pi-mcp-adapter`) replaces any tool result whose JSON exceeds its
-`detailsMaxBytes` (default **16 KiB**) with an `{ omitted: true }` summary that
-has no `entities`/`relations` keys — so on the mcpScript/worker call path a
-large search appeared to return "no results".
+result is large: 50–100 KiB per search on a live graph, and much more for the
+whole graph. Some MCP clients bound the tool results they expose to the model:
+the pi coding agent's adapter (`pi-mcp-adapter`) replaces any tool result whose
+JSON exceeds its `detailsMaxBytes` (default **16 KiB**) with an `{ omitted:
+true }` summary that has no `entities`/`relations` keys — so on the
+mcpScript/worker call path a large search appeared to return "no results".
 
-To keep responses usable, this server **curates** graph responses: the result
-is deep-truncated so the serialized tool result fits within the same budget the
-adapter enforces by default. Truncation preserves the top-level
-`{ entities, relations }` shape and is applied in stages — observation text
-length, then observations per entity, then relations, then entities — keeping
-the head of each list and, for `search_nodes`, preferring observations that
-match the query. When data was cut, the response carries a `truncated` field
-with the byte budget and the counts dropped (entities / observations /
-relations, plus a flag when observation text was shortened). Results that
-already fit pass through unchanged.
+By default the server does **nothing** about this: it returns the full result
+and leaves the bound to the client. That is deliberate. The adapter's guard
+_spills_ an oversized result to a temp file (mode 0600) and returns a summary
+carrying `fullResultPath`, so the caller can still read everything — whereas a
+server-trimmed response is lossy with no way back to the dropped data. An
+unbounded reply is noisy; a bounded reply that silently drops half a board is
+worse.
 
-The budget is configurable:
+Optionally, the server can **curate** graph responses instead: the result is
+deep-truncated so the serialized tool result fits within the adapter's default
+budget. Truncation preserves the top-level `{ entities, relations }` shape and
+is applied in stages — observation text length, then observations per entity,
+then relations, then entities — keeping the head of each list and, for
+`search_nodes`, preferring observations that match the query. When data was
+cut, the response carries a `truncated` field with the byte budget and the
+counts dropped (entities / observations / relations, plus a flag when
+observation text was shortened). Results that already fit pass through
+unchanged, and a response that fits drops the marker entirely.
 
-- `MEMORY_RESPONSE_MAX_BYTES` — max serialized tool-result size in bytes
-  (default `16384`, matching pi-mcp-adapter's `detailsMaxBytes` default; `0`
-  disables curation).
+Curation is a feature flag, **disabled by default**:
+
+- `MEMORY_RESPONSE_MAX_BYTES` — max serialized tool-result size in bytes.
+  Unset, `0`, or unparseable leaves curation off. A positive integer (set it to
+  the client's `detailsMaxBytes`) enables it at that budget.
 
 Caveats:
 
-- Truncation is lossy by design; the SQLite database is always the source of
-  truth. Narrower `search_nodes` queries, or `open_nodes` on fewer names,
+- Truncation is lossy by design and the delivered response is the whole story —
+  the marker reports what was dropped but there is no out-of-band copy. The
+  SQLite database remains the source of truth: narrower `search_nodes` queries,
+  `open_nodes` on fewer names, or raising the budget (or disabling curation)
   return more of the graph.
+- A curated response is in-band and bounded, which is friendlier to read than a
+  guard replacement plus a file path — that is the trade for giving up the
+  escape hatch.
 - Budgets below a few hundred bytes cannot fit even the most aggressively
   trimmed response (one entity, one short observation); the smallest possible
   result is delivered regardless.
 - If you raise the client-side cap (pi: `settings.outputGuard.detailsMaxBytes`
-  in `mcp.json` — note that setting is global for all servers), raise
-  `MEMORY_RESPONSE_MAX_BYTES` to match, or results are truncated more than the
-  client would allow.
+  in `mcp.json` — note that setting is global for all servers) you can either
+  raise `MEMORY_RESPONSE_MAX_BYTES` to match, or leave curation off and let the
+  relaxed cap do the work.
 - The `truncated` key is additive to the frozen upstream
   `{ entities, relations }` schema and appears only when data was dropped. It
   is declared (optional) in the `outputSchema` of the three graph tools, so

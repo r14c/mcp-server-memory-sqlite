@@ -91,6 +91,15 @@ through the triggers.
 
 ## Gotchas
 
+- Response curation is **opt-in and off by default**: by default the graph tools
+  return the full result and the client bounds it (pi's adapter replaces an
+  oversized result with a summary carrying a `fullResultPath` spill file, so
+  nothing is unreachable). `MEMORY_RESPONSE_MAX_BYTES=<bytes>` enables in-band
+  curation at that budget — bounded and readable, but lossy with no way back to
+  the dropped data. A curated response declares `truncated` (optional) in the
+  graph tools' `outputSchema`; emitting it undeclared made strict clients reject
+  every curated response.
+
 - `node:sqlite` must have FTS5 with the trigram tokenizer; the server fails at
   startup otherwise. Verified on nixpkgs `nodejs-slim-24.19.0` (SQLite
   3.51.2); Node >= 24 is required by `sqlite-up`.

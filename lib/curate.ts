@@ -1,19 +1,24 @@
 import type { KnowledgeGraph } from "./types.js";
 
-// Response curation: client output guards (e.g. pi-mcp-adapter) replace any
-// tool result whose JSON exceeds a byte budget (detailsMaxBytes, default
-// 16 KiB) with an { omitted: true } summary that has no entities/relations
-// keys — so large search results looked like "no results". Instead of patching
-// the client, this server curates graph responses so the serialized tool
-// result fits under the same default budget: deep truncation that preserves
-// the top-level { entities, relations } shape and trims the payload in stages
-// until it fits. Truncation is deterministic and head-preserving, keeps
-// query-matching observations for search_nodes, and reports itself in a
-// `truncated` field (only present when data was dropped) so callers know the
-// response is lossy. The budget is configurable via MEMORY_RESPONSE_MAX_BYTES
-// (0 disables curation); results that already fit pass through unchanged.
+// Response curation (opt-in): client output guards (e.g. pi-mcp-adapter)
+// replace any tool result whose JSON exceeds a byte budget (detailsMaxBytes,
+// default 16 KiB) with an { omitted: true } summary that has no
+// entities/relations keys — so large search results looked like "no results".
+// This server can instead curate graph responses so the serialized tool result
+// fits under that budget: deep truncation that preserves the top-level
+// { entities, relations } shape and trims the payload in stages until it fits.
+// Truncation is deterministic and head-preserving, keeps query-matching
+// observations for search_nodes, and reports itself in a `truncated` field
+// (only present when data was dropped) so callers know the response is lossy.
+//
+// Curation is OFF by default and enabled by setting MEMORY_RESPONSE_MAX_BYTES
+// to a positive byte budget. A curated response is bounded and in-band, but it
+// is lossy and — unlike the client's own guard — offers no way to reach the
+// dropped data afterwards; an oversized response handed to the guard instead
+// comes back as a summary carrying a path to the full result. So the default
+// is to return the full graph and let the client bound it.
 
-export const DEFAULT_RESPONSE_MAX_BYTES = 16 * 1024; // pi-mcp-adapter DEFAULT_MCP_DETAILS_MAX_BYTES
+export const DEFAULT_RESPONSE_MAX_BYTES = 0; // 0 = curation disabled
 
 export interface TruncationInfo {
   maxBytes: number;
@@ -32,7 +37,13 @@ export interface CuratedGraph extends KnowledgeGraph {
   [key: string]: unknown;
 }
 
-/** Resolve the response budget from MEMORY_RESPONSE_MAX_BYTES (0 = disabled). */
+/**
+ * Resolve the response budget from MEMORY_RESPONSE_MAX_BYTES.
+ *
+ * Unset, blank, `0`, or unparseable means curation is disabled (the default).
+ * A positive integer is the budget in bytes; a value below the smallest
+ * expressible response still curates as far as it can (see curateGraph).
+ */
 export function responseMaxBytes(env: NodeJS.ProcessEnv = process.env): number {
   const raw = env.MEMORY_RESPONSE_MAX_BYTES;
   if (raw === undefined || raw.trim() === "") return DEFAULT_RESPONSE_MAX_BYTES;
@@ -54,10 +65,30 @@ interface TrimLevel {
 // result fits the budget. Each level is stricter than the last; the final
 // level (one entity, one short observation, no relations) always fits.
 const LEVELS: TrimLevel[] = [
-  { maxObservationChars: 300, maxObservationsPerEntity: Infinity, maxRelations: Infinity, maxEntities: Infinity },
-  { maxObservationChars: 160, maxObservationsPerEntity: Infinity, maxRelations: Infinity, maxEntities: Infinity },
-  { maxObservationChars: 160, maxObservationsPerEntity: 4, maxRelations: Infinity, maxEntities: Infinity },
-  { maxObservationChars: 80, maxObservationsPerEntity: 4, maxRelations: Infinity, maxEntities: Infinity },
+  {
+    maxObservationChars: 300,
+    maxObservationsPerEntity: Infinity,
+    maxRelations: Infinity,
+    maxEntities: Infinity,
+  },
+  {
+    maxObservationChars: 160,
+    maxObservationsPerEntity: Infinity,
+    maxRelations: Infinity,
+    maxEntities: Infinity,
+  },
+  {
+    maxObservationChars: 160,
+    maxObservationsPerEntity: 4,
+    maxRelations: Infinity,
+    maxEntities: Infinity,
+  },
+  {
+    maxObservationChars: 80,
+    maxObservationsPerEntity: 4,
+    maxRelations: Infinity,
+    maxEntities: Infinity,
+  },
   { maxObservationChars: 80, maxObservationsPerEntity: 2, maxRelations: 20, maxEntities: Infinity },
   { maxObservationChars: 40, maxObservationsPerEntity: 2, maxRelations: 10, maxEntities: 10 },
   { maxObservationChars: 40, maxObservationsPerEntity: 1, maxRelations: 5, maxEntities: 5 },
@@ -154,7 +185,11 @@ function buildCurated(
     relationCountDropped: graph.relations.length - trimmed.relations.length,
     observationTextTruncated: trimmed.textTruncated,
   };
-  const curated: CuratedGraph = { entities: trimmed.entities, relations: trimmed.relations, truncated };
+  const curated: CuratedGraph = {
+    entities: trimmed.entities,
+    relations: trimmed.relations,
+    truncated,
+  };
   const resultBytes = byteLength(serializeToolResult(curated));
   truncated.resultBytes = resultBytes;
   return { curated, resultBytes };

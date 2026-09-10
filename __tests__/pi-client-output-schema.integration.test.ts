@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import { existsSync } from "fs";
 import os from "os";
 import path from "path";
@@ -62,6 +62,21 @@ beforeAll(async () => {
 });
 
 describe.skipIf(!available)("pi client structured-output validation (integration)", () => {
+  // Curation is opt-in (MEMORY_RESPONSE_MAX_BYTES defaults to 0), and these
+  // tests are about the curated payload, so enable it at the adapter's default
+  // cap for the duration. The last test covers the default (disabled) contract.
+  const BUDGET = 16 * 1024;
+  const originalBudget = process.env.MEMORY_RESPONSE_MAX_BYTES;
+
+  beforeEach(() => {
+    process.env.MEMORY_RESPONSE_MAX_BYTES = String(BUDGET);
+  });
+
+  afterEach(() => {
+    if (originalBudget === undefined) delete process.env.MEMORY_RESPONSE_MAX_BYTES;
+    else process.env.MEMORY_RESPONSE_MAX_BYTES = originalBudget;
+  });
+
   async function connect(manager: KnowledgeGraphManager) {
     const server = buildServer(manager);
     const client = new pi.Client({ name: "structured-output-test", version: "0.0.1" });
@@ -142,6 +157,29 @@ describe.skipIf(!available)("pi client structured-output validation (integration
     expect(structured.entities).toHaveLength(1);
     expect(structured.truncated).toBeUndefined();
     expect(Object.keys(structured)).toEqual(["entities", "relations"]);
+    await client.close();
+  });
+
+  // The default is no curation: the client receives the whole result, however
+  // large, and its own output guard is what bounds it (spilling to a file).
+  it("passes the full, uncurated graph through by default", async () => {
+    delete process.env.MEMORY_RESPONSE_MAX_BYTES;
+    const manager = await openManager();
+    const client = await connect(manager);
+
+    const result = await client.callTool({ name: "read_graph", arguments: {} });
+    const structured = result.structuredContent as {
+      entities: { name: string; observations: string[] }[];
+      relations: unknown[];
+      truncated?: unknown;
+    };
+
+    // Nothing is dropped: every entity with every observation survives.
+    expect(structured.entities).toHaveLength(6);
+    for (const entity of structured.entities) expect(entity.observations).toHaveLength(8);
+    expect(structured.truncated).toBeUndefined();
+    expect(Object.keys(structured)).toEqual(["entities", "relations"]);
+    expect(Buffer.byteLength(JSON.stringify(structured), "utf8")).toBeGreaterThan(BUDGET);
     await client.close();
   });
 });

@@ -3,11 +3,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { KnowledgeGraphManager } from "../index.js";
-import {
-  buildRealisticGraph,
-  DETAILS_MAX_BYTES,
-  serializeSearchResult,
-} from "./guard-fixture.js";
+import { buildRealisticGraph, DETAILS_MAX_BYTES, serializeSearchResult } from "./guard-fixture.js";
 import {
   CuratedGraph,
   curateGraph,
@@ -16,10 +12,15 @@ import {
   DEFAULT_RESPONSE_MAX_BYTES,
 } from "../lib/curate.js";
 
-// Server-side response curation: graph responses are deep-truncated so the
-// serialized tool result fits within the client output-guard budget
+// Curation is opt-in (DEFAULT_RESPONSE_MAX_BYTES is 0), so the behavior tests
+// below pin an explicit budget: DETAILS_MAX_BYTES, pi-mcp-adapter's default
+// cap. The env tests at the end cover the default (disabled) and the flag.
+
+// Server-side response curation (opt-in): graph responses are deep-truncated
+// so the serialized tool result fits within the client output-guard budget
 // (pi-mcp-adapter detailsMaxBytes, default 16 KiB), preserving the top-level
 // { entities, relations } shape and reporting the cut in a `truncated` field.
+// These tests pass a budget explicitly because the default is 0 (disabled).
 describe("response curation (server-side deep truncation)", () => {
   let manager: KnowledgeGraphManager;
   let testFilePath: string;
@@ -49,7 +50,7 @@ describe("response curation (server-side deep truncation)", () => {
     await manager.createEntities([{ name: "Zed", entityType: "person", observations: ["tiny"] }]);
     const graph = await manager.searchNodes("zed");
 
-    const curated = curateGraph(graph, DEFAULT_RESPONSE_MAX_BYTES);
+    const curated = curateGraph(graph, DETAILS_MAX_BYTES);
     expect(curated).toBe(graph);
     expect((curated as CuratedGraph).truncated).toBeUndefined();
   });
@@ -58,30 +59,36 @@ describe("response curation (server-side deep truncation)", () => {
     await buildRealisticGraph(manager);
     const graph = await manager.searchNodes("widget");
 
-    const curated = curateGraph(graph, DEFAULT_RESPONSE_MAX_BYTES);
+    const curated = curateGraph(graph, DETAILS_MAX_BYTES);
     const bytes = Buffer.byteLength(serializeToolResult(curated), "utf8");
-    expect(bytes).toBeLessThanOrEqual(DEFAULT_RESPONSE_MAX_BYTES);
+    expect(bytes).toBeLessThanOrEqual(DETAILS_MAX_BYTES);
     expect(curated.entities.length).toBeGreaterThan(0);
     expect(curated.entities.length).toBeLessThanOrEqual(graph.entities.length);
     expect(curated.relations.length).toBeLessThanOrEqual(graph.relations.length);
 
     const info = (curated as CuratedGraph).truncated;
     expect(info).toBeDefined();
-    expect(info!.originalBytes).toBeGreaterThan(DEFAULT_RESPONSE_MAX_BYTES);
-    expect(info!.resultBytes).toBeLessThanOrEqual(DEFAULT_RESPONSE_MAX_BYTES);
-    expect(info!.entityCountDropped + info!.observationCountDropped + info!.relationCountDropped).toBeGreaterThan(0);
+    expect(info!.originalBytes).toBeGreaterThan(DETAILS_MAX_BYTES);
+    expect(info!.resultBytes).toBeLessThanOrEqual(DETAILS_MAX_BYTES);
+    expect(
+      info!.entityCountDropped + info!.observationCountDropped + info!.relationCountDropped,
+    ).toBeGreaterThan(0);
   });
 
   it("does not leak internal fields into the delivered result", async () => {
     await buildRealisticGraph(manager);
     const graph = await manager.searchNodes("widget");
 
-    const curated = curateGraph(graph, DEFAULT_RESPONSE_MAX_BYTES);
+    const curated = curateGraph(graph, DETAILS_MAX_BYTES);
     // Top-level keys are exactly the frozen shape plus the truncation marker
     // (no textTruncated/other internals); same for the structuredContent copy.
     expect(Object.keys(curated).sort()).toEqual(["entities", "relations", "truncated"]);
     const parsed = JSON.parse(serializeToolResult(curated));
-    expect(Object.keys(parsed.structuredContent).sort()).toEqual(["entities", "relations", "truncated"]);
+    expect(Object.keys(parsed.structuredContent).sort()).toEqual([
+      "entities",
+      "relations",
+      "truncated",
+    ]);
     expect("textTruncated" in parsed.structuredContent).toBe(false);
   });
 
@@ -89,9 +96,9 @@ describe("response curation (server-side deep truncation)", () => {
     await buildRealisticGraph(manager);
     const graph = await manager.readGraph();
 
-    const curated = curateGraph(graph, DEFAULT_RESPONSE_MAX_BYTES);
+    const curated = curateGraph(graph, DETAILS_MAX_BYTES);
     expect(Buffer.byteLength(serializeToolResult(curated), "utf8")).toBeLessThanOrEqual(
-      DEFAULT_RESPONSE_MAX_BYTES,
+      DETAILS_MAX_BYTES,
     );
   });
 
@@ -99,8 +106,8 @@ describe("response curation (server-side deep truncation)", () => {
     await buildRealisticGraph(manager);
     const graph = await manager.searchNodes("widget");
 
-    const first = curateGraph(graph, DEFAULT_RESPONSE_MAX_BYTES);
-    const second = curateGraph(graph, DEFAULT_RESPONSE_MAX_BYTES);
+    const first = curateGraph(graph, DETAILS_MAX_BYTES);
+    const second = curateGraph(graph, DETAILS_MAX_BYTES);
     expect(first).toEqual(second);
     // Head preserved: the first matched entity survives with its name intact.
     expect(first.entities[0].name).toBe(graph.entities[0].name);
@@ -172,12 +179,17 @@ describe("response curation (server-side deep truncation)", () => {
 
     const toolResult = serializeSearchResult(graph);
     expect(serializeToolResult(graph)).toBe(JSON.stringify(toolResult));
-    expect(Buffer.byteLength(serializeToolResult(graph), "utf8")).toBeGreaterThan(DETAILS_MAX_BYTES);
+    expect(Buffer.byteLength(serializeToolResult(graph), "utf8")).toBeGreaterThan(
+      DETAILS_MAX_BYTES,
+    );
   });
 
   describe("responseMaxBytes env", () => {
-    it("defaults to 16384 when unset", () => {
-      expect(responseMaxBytes({})).toBe(DEFAULT_RESPONSE_MAX_BYTES);
+    it("disables curation when unset", () => {
+      expect(DEFAULT_RESPONSE_MAX_BYTES).toBe(0);
+      expect(responseMaxBytes({})).toBe(0);
+      expect(responseMaxBytes({ MEMORY_RESPONSE_MAX_BYTES: "" })).toBe(0);
+      expect(responseMaxBytes({ MEMORY_RESPONSE_MAX_BYTES: "  " })).toBe(0);
     });
     it("honors a positive integer", () => {
       expect(responseMaxBytes({ MEMORY_RESPONSE_MAX_BYTES: "32768" })).toBe(32768);
@@ -185,9 +197,10 @@ describe("response curation (server-side deep truncation)", () => {
     it("treats 0 as disabled", () => {
       expect(responseMaxBytes({ MEMORY_RESPONSE_MAX_BYTES: "0" })).toBe(0);
     });
-    it("falls back to the default on garbage", () => {
-      expect(responseMaxBytes({ MEMORY_RESPONSE_MAX_BYTES: "abc" })).toBe(DEFAULT_RESPONSE_MAX_BYTES);
-      expect(responseMaxBytes({ MEMORY_RESPONSE_MAX_BYTES: "-5" })).toBe(DEFAULT_RESPONSE_MAX_BYTES);
+    it("stays disabled on garbage", () => {
+      expect(responseMaxBytes({ MEMORY_RESPONSE_MAX_BYTES: "abc" })).toBe(0);
+      expect(responseMaxBytes({ MEMORY_RESPONSE_MAX_BYTES: "-5" })).toBe(0);
+      expect(responseMaxBytes({ MEMORY_RESPONSE_MAX_BYTES: "1.5" })).toBe(0);
     });
   });
 });
