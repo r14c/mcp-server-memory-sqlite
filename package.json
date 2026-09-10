@@ -2,12 +2,12 @@
   "name": "mcp-server-memory-sqlite",
   "version": "0.8.0",
   "description": "MCP server for enabling memory for AI assistants through a knowledge graph",
-  "homepage": "https://git.sunshinegardens.org/slop/mcp-server-memory-sqlite/",
+  "homepage": "https://github.com/r14c/mcp-server-memory-sqlite/",
   "license": "SEE LICENSE IN LICENSE",
   "author": "Model Context Protocol a Series of LF Projects, LLC. ft. sunshine gardens eng. crew",
   "repository": {
     "type": "git",
-    "url": "https://git.sunshinegardens.org/slop/mcp-server-memory-sqlite.git"
+    "url": "https://github.com/r14c/mcp-server-memory-sqlite.git"
   },
   "bin": {
     "mcp-server-memory": "dist/index.js"
