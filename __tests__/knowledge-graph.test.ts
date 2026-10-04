@@ -490,6 +490,55 @@ describe("KnowledgeGraphManager", () => {
     });
   });
 
+  describe("listEntities", () => {
+    it("should return an empty list when there are no entities", async () => {
+      expect(await manager.listEntities()).toEqual([]);
+    });
+
+    it("should return name and entityType only, ordered by name", async () => {
+      await manager.createEntities([
+        { name: "Bob", entityType: "person", observations: ["likes programming"] },
+        { name: "Alice", entityType: "person", observations: [] },
+      ]);
+      await manager.createRelations([{ from: "Alice", to: "Bob", relationType: "knows" }]);
+
+      const entities = await manager.listEntities();
+
+      expect(entities).toEqual([
+        { name: "Alice", entityType: "person" },
+        { name: "Bob", entityType: "person" },
+      ]);
+      expect(entities[0]).not.toHaveProperty("observations");
+    });
+
+    it("should order case-insensitively, matching the NOCASE entity identity", async () => {
+      await manager.createEntities([
+        { name: "bob", entityType: "person", observations: [] },
+        { name: "Alice", entityType: "person", observations: [] },
+        { name: "Charlie", entityType: "person", observations: [] },
+      ]);
+
+      // A BINARY sort would put `bob` last, disagreeing with the case-insensitive
+      // identity the rest of the graph uses.
+      expect((await manager.listEntities()).map(({ name }) => name)).toEqual([
+        "Alice",
+        "bob",
+        "Charlie",
+      ]);
+    });
+
+    it("should reflect a delete", async () => {
+      await manager.createEntities([
+        { name: "Alice", entityType: "person", observations: [] },
+        { name: "Bob", entityType: "person", observations: [] },
+      ]);
+
+      await manager.deleteEntities(["Alice"]);
+
+      expect(await manager.listEntities()).toEqual([{ name: "Bob", entityType: "person" }]);
+    });
+  });
+
   describe("searchNodes", () => {
     beforeEach(async () => {
       await manager.createEntities([

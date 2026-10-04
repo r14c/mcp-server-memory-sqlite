@@ -85,12 +85,19 @@ through the triggers.
 - `lib/server.ts` — `buildServer` + the ten tool registrations, the resource, and subscriptions.
 - `lib/migrate.ts` — sqlite-up migration runner.
 - `lib/types.ts` / `lib/ontology.ts` / `lib/paths.ts` — types, relation vocabulary, path resolution.
+- `lib/web/` — the HTMX browser/editor. `html.ts` (escaping + page shell),
+  `fragments.ts` (pure panels), `routes.ts` (`@koa/router` table), `server.ts`
+  (`createApp`/`startWebServer`, same-origin guard, htmx asset). It drives the
+  same `KnowledgeGraphManager` the MCP tools do: no SQL, no schema, no types of
+  its own. `web.ts` (root) is its bin, `mcp-server-memory-web`.
 
 ## Commands
 
 - `npm run build` / `npx tsc` — compile to `dist/`
 - `npm test` / `npx vitest run` — full test suite
 - `npm run watch` — `tsc --watch`
+- `npm run web` — build and serve the web UI on `127.0.0.1:3939` (`PORT`,
+  `HOST`, `MEMORY_FILE_PATH`)
 
 ## Gotchas
 
@@ -125,9 +132,14 @@ through the triggers.
   are redundant — the observations PK `(entityName, content)` and the relations
   PK `("from","to",relationType)` already cover those prefix lookups — and are
   dropped on open. Only `idx_relations_to` is kept.
-- The root `memory.db` is an empty scratch artifact (gitignored: `*.db`). The
-  real database path comes from `MEMORY_FILE_PATH`; a legacy `.jsonl`/`.json`
-  path is redirected to a sibling `.db` and imported on first open.
+- The default database path is a scratch artifact beside the compiled entry
+  point: `dist/memory.db` for `node dist/index.js` / `node dist/web.js`, and the
+  repo root under source (gitignored: `*.db`). The real database path comes from
+  `MEMORY_FILE_PATH`, which resolves **relative** values against that same
+  directory rather than the shell's cwd — so `MEMORY_FILE_PATH=./memory.db`
+  under the built bin silently means `dist/memory.db`, and only an absolute path
+  (or `../memory.db`) reaches the repo root. A legacy `.jsonl`/`.json` path is
+  redirected to a sibling `.db` and imported on first open.
 - Entity identity (`COLLATE NOCASE`) folds ASCII case only, while the FTS5
   trigram index folds diacritics too — so `"Café"` and `"café"` are distinct
   entities that both surface in search. Identity does not trim whitespace.
@@ -137,3 +149,18 @@ through the triggers.
   `node dist/index.js`) would make the other mode's migrations look pending and
   re-run them, failing on `duplicate column name`. The default paths differ
   (`memory.db` vs `dist/memory.db`), so this does not arise in normal use.
+- The web UI answers every mutation with **200**, even when the manager rejected
+  the write: htmx only swaps 2xx bodies, so a failure travels as a banner inside
+  the re-rendered panel. The `error.message` in it is the manager's, verbatim.
+- Entity names reach the panels through query strings and hidden form fields, so
+  every interpolation must go through `escapeHtml` (`encodeURIComponent` in a
+  URL); `nodePanel` compares names **exactly**, so routes canonicalize a name via
+  the `openNodes` result first — a case-variant request would otherwise render
+  the not-found view, whose create form the NOCASE identity rejects as a
+  duplicate.
+- The web UI is loopback-only and unauthenticated. It answers loopback `Host`
+  headers only (that is what closes DNS rebinding — an Origin check alone is
+  defeated by a page that rebinds a domain it controls to 127.0.0.1, since that
+  page is same-origin with the name it used), and non-GET/HEAD requests need a
+  same-origin `Origin` (no Origin at all is allowed, for curl). `HX-Trigger:
+  graph-changed` is what refreshes the index pane after a write.

@@ -14,6 +14,8 @@ export {
   registerKnowledgeGraphSubscriptions,
 } from "./lib/server.js";
 export { ensureMemoryFilePath, defaultMemoryPath } from "./lib/paths.js";
+export { createApp, startWebServer } from "./lib/web/server.js";
+export type { RunningWebServer, WebServerOptions } from "./lib/web/server.js";
 export type {
   DeleteEntitiesResult,
   DeleteObservationsResult,

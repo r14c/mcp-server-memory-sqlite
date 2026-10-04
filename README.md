@@ -211,6 +211,36 @@ every entity — always returns `[]`.
     `delete_relations`) emit `notifications/resources/updated` for this URI, so
     subscribed clients see live changes
 
+## Web UI
+
+A localhost, server-rendered HTMX app for browsing and editing the same
+knowledge graph. It is built on the same `KnowledgeGraphManager`, so it shares
+the MCP server's migrations, SQLite file, relation vocabulary, and write
+semantics — there is no second schema and no second copy of the graph.
+
+```sh
+npm run web                          # builds, then serves http://127.0.0.1:3939
+PORT=8080 npm run web                # PORT (default 3939) and HOST (default 127.0.0.1)
+MEMORY_FILE_PATH=./kg.db npm run web # same resolution rules as the MCP server
+```
+
+- search with the server's FTS5 index (`search_nodes` semantics), browse the
+  entity index, and open an entity with its observations and both directions of
+  its relations
+- create and delete entities, add/edit/delete observations in place
+  (`update_observations` semantics), and create/delete relations; a declared
+  inverse (`part_of` ↔ `contains`) is materialized exactly as it is over MCP
+- edits and deletes that match nothing report the manager's own message instead
+  of pretending to succeed, and web writes are stamped `source = 'web'`
+
+The server binds to loopback and has no authentication — it is a single-user
+local tool, not a service. It answers loopback `Host` headers only, which
+closes DNS rebinding (a page on an attacker-controlled domain that resolves to
+`127.0.0.1` sends that domain in `Host`), and state-changing requests must also
+carry a same-origin `Origin`, which stops any other page you happen to visit
+from posting to it. Embedders can widen the allowlist with `allowedHosts`; it is
+still not something to expose beyond the loopback interface.
+
 # Usage with MCP clients
 
 ### Setup

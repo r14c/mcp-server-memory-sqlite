@@ -10,24 +10,32 @@
     "url": "https://github.com/r14c/mcp-server-memory-sqlite.git"
   },
   "bin": {
-    "mcp-server-memory": "dist/index.js"
+    "mcp-server-memory": "dist/index.js",
+    "mcp-server-memory-web": "dist/web.js"
   },
   "files": [
     "dist"
   ],
   "type": "module",
   "scripts": {
-    "build": "tsc && shx chmod +x dist/index.js",
+    "build": "tsc && shx chmod +x dist/index.js dist/web.js",
+    "web": "npm run build && node dist/web.js",
     "prepare": "npm run build",
     "watch": "tsc --watch",
     "test": "vitest run --coverage",
     "fmt": "oxfmt"
   },
   "dependencies": {
+    "@koa/bodyparser": "^6.1.0",
+    "@koa/router": "^15.7.0",
+    "@koa/send": "^6.0.0",
     "@modelcontextprotocol/sdk": "^1.30.0",
+    "htmx.org": "^2.0.11",
+    "koa": "^3.2.1",
     "sqlite-up": "^0.6.0"
   },
   "devDependencies": {
+    "@types/koa": "^3.0.3",
     "@types/node": "^22",
     "@vitest/coverage-v8": "^4.1.8",
     "oxfmt": "^0.64.0",

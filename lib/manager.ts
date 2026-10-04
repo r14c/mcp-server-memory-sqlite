@@ -558,6 +558,21 @@ export class KnowledgeGraphManager {
     };
   }
 
+  // Name and type for every entity. The browse pane only needs the index list,
+  // so this deliberately skips the observation and relation hydration that
+  // readGraph() does rather than loading the whole graph. The order is NOCASE
+  // because entity identity is (migration 004's unique index): a BINARY sort
+  // would order `bob` after `Charlie` and disagree with the identity the rest
+  // of the graph is built on.
+  async listEntities(): Promise<{ name: string; entityType: string }[]> {
+    return this.db
+      .prepare("SELECT name, entityType FROM entities ORDER BY name COLLATE NOCASE")
+      .all() as {
+      name: string;
+      entityType: string;
+    }[];
+  }
+
   // Search entity names, entity types, and observation content. The fast path
   // queries the FTS5 trigram index (literal substring match, case-insensitive,
   // same semantics as the old LIKE scan but indexed); queries too short for
