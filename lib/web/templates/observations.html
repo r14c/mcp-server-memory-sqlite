@@ -1,0 +1,13 @@
+<h3>Observations (<%= it.entity.observations.length %>)</h3>
+<% if (it.entity.observations.length === 0) { %>
+<p class="muted">No observations yet.</p>
+<% } else { %>
+<ul>
+<% it.entity.observations.forEach((observation) => { %><%~ include("./observation", { entityName: it.entity.name, observation }) %><% }) %>
+</ul>
+<% } %>
+<form hx-post="/observations">
+  <input type="hidden" name="entityName" value="<%= it.entity.name %>">
+  <input name="content" placeholder="new observation" autocomplete="off" />
+  <button type="submit">add</button>
+</form>

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>memory kg</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="/static/htmx.min.js"></script>
+  </head>
+  <body hx-target="#node" hx-swap="innerHTML">
+    <header>
+      <h1>memory kg</h1>
+      <form hx-get="/search" hx-target="#index" hx-swap="innerHTML" hx-trigger="submit, keyup changed delay:300ms">
+        <input type="search" name="q" placeholder="search" autocomplete="off" />
+      </form>
+      <form hx-post="/entities">
+        <input name="name" placeholder="name" autocomplete="off" />
+        <input name="entityType" placeholder="entity type" autocomplete="off" />
+        <button type="submit">create</button>
+      </form>
+    </header>
+    <div class="layout">
+      <nav id="index" hx-get="/entities" hx-trigger="load, graph-changed from:body" hx-target="this" hx-swap="innerHTML"></nav>
+      <main id="node" hx-on::after-swap="this.scrollTop = 0"><% if (it.node.trim() === "") { %><p class="muted">Select an entity or search to begin.</p><% } else { %><%~ it.node %><% } %></main>
+    </div>
+  </body>
+</html>

@@ -1,0 +1,8 @@
+<section class="panel">
+<p class="error">No entity named “<%= it.name %>”.</p>
+<form hx-post="/entities">
+  <input name="name" value="<%= it.name %>" placeholder="name" autocomplete="off" />
+  <input name="entityType" placeholder="entity type" autocomplete="off" />
+  <button type="submit">create</button>
+</form>
+</section>

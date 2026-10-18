@@ -1,0 +1,13 @@
+<li class="observation">
+<form hx-post="/observations/update">
+  <input type="hidden" name="entityName" value="<%= it.entityName %>">
+  <input type="hidden" name="match" value="<%= it.observation %>">
+  <textarea name="replacement" rows="2"><%= it.observation %></textarea>
+  <button type="submit">save</button>
+</form>
+<form hx-post="/observations/delete" hx-confirm="Delete this observation from <%= it.entityName %>?">
+  <input type="hidden" name="entityName" value="<%= it.entityName %>">
+  <input type="hidden" name="content" value="<%= it.observation %>">
+  <button class="danger" type="submit">delete</button>
+</form>
+</li>

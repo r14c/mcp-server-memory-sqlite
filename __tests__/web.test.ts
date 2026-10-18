@@ -73,6 +73,7 @@ describe("web app", () => {
 
     const html = await response.text();
     expect(html).toContain("/static/htmx.min.js");
+    expect(html).toContain("/static/style.css");
     expect(html).toContain('id="index"');
     expect(html).toContain('id="node"');
     // Forms inherit the target from <body>; the index nav overrides it.
@@ -442,5 +443,12 @@ describe("web app", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type") ?? "").toContain("javascript");
     expect((await response.text()).length).toBeGreaterThan(0);
+  });
+
+  it("serves the stylesheet with a css content type", async () => {
+    const response = await get("/static/style.css");
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type") ?? "").toContain("css");
+    expect(await response.text()).toContain(".layout");
   });
 });

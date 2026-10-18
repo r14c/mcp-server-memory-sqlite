@@ -2,7 +2,7 @@ import Router from "@koa/router";
 import type { Context } from "koa";
 import type { KnowledgeGraphManager } from "../manager.js";
 import { errorBanner, indexPanel, nodePanel, notice, searchResults } from "./fragments.js";
-import { page } from "./html.js";
+import { render } from "./templates.js";
 
 // Body and query fields arrive as a single value, a repeated field (string[]),
 // or absent. Collapse all three shapes to a string so handlers never branch on
@@ -79,7 +79,7 @@ export function createRouter(manager: KnowledgeGraphManager): Router {
   router.get("/", (ctx) => {
     // No initial node content: the shell renders its own placeholder, and the
     // index pane fills itself from its hx-trigger="load" listener.
-    renderHtml(ctx, page(""));
+    renderHtml(ctx, render("page", { node: "" }));
   });
 
   router.get("/search", async (ctx) => {

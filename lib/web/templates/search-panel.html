@@ -1,0 +1,10 @@
+<section class="panel">
+<h2><%= it.entities.length %> matches for “<%= it.query %>”</h2>
+<% if (it.entities.length === 0) { %>
+<p class="muted">No matches.</p>
+<% } else { %>
+<ul>
+<% it.entities.forEach((entity) => { %><%~ include("./entity-row", { entity }) %><% }) %>
+</ul>
+<% } %>
+</section>

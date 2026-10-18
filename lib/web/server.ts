@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import type { Server } from "node:http";
 import type { KnowledgeGraphManager } from "../manager.js";
 import { createRouter } from "./routes.js";
+import { webDir } from "./templates.js";
 
 // Resolve the htmx bundle once, at startup: a missing dependency is a packaging
 // error, and failing loudly here beats serving a 404 for the one asset the app
@@ -90,6 +91,10 @@ export function createApp(manager: KnowledgeGraphManager, options: WebServerOpti
   app.use(async (ctx, next) => {
     if (ctx.path === "/static/htmx.min.js") {
       await send(ctx, "htmx.min.js", { root: htmxRoot, index: false });
+      return;
+    }
+    if (ctx.path === "/static/style.css") {
+      await send(ctx, "style.css", { root: webDir, index: false });
       return;
     }
     await next();

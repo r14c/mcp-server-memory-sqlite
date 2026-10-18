@@ -1,0 +1,22 @@
+<h3>Relations (<%= it.relations.length %>)</h3>
+<% if (it.relations.length === 0) { %>
+<p class="muted">No relations yet.</p>
+<% } else { %>
+<ul>
+<% it.relations.forEach((relation) => { %><%~ include("./relation", { relation, view: it.entityName }) %><% }) %>
+</ul>
+<% } %>
+<form hx-post="/relations">
+  <input type="hidden" name="from" value="<%= it.entityName %>">
+  <input name="to" list="entity-names" placeholder="to" autocomplete="off" />
+  <input name="relationType" list="relation-types" placeholder="relation type" autocomplete="off" />
+  <button type="submit">add</button>
+  <datalist id="entity-names">
+<% it.entityNames.forEach((name) => { %><option value="<%= name %>"></option>
+<% }) %>
+  </datalist>
+  <datalist id="relation-types">
+<% it.relationTypes.forEach((relationType) => { %><option value="<%= relationType.type %>"><%= relationType.hint %></option>
+<% }) %>
+  </datalist>
+</form>

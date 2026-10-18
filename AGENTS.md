@@ -85,15 +85,18 @@ through the triggers.
 - `lib/server.ts` — `buildServer` + the ten tool registrations, the resource, and subscriptions.
 - `lib/migrate.ts` — sqlite-up migration runner.
 - `lib/types.ts` / `lib/ontology.ts` / `lib/paths.ts` — types, relation vocabulary, path resolution.
-- `lib/web/` — the HTMX browser/editor. `html.ts` (escaping + page shell),
-  `fragments.ts` (pure panels), `routes.ts` (`@koa/router` table), `server.ts`
-  (`createApp`/`startWebServer`, same-origin guard, htmx asset). It drives the
-  same `KnowledgeGraphManager` the MCP tools do: no SQL, no schema, no types of
-  its own. `web.ts` (root) is its bin, `mcp-server-memory-web`.
+- `lib/web/` — the HTMX browser/editor. `templates.ts` (Eta instance + asset
+  paths), `fragments.ts` (view models → rendered panels), `routes.ts`
+  (`@koa/router` table), `server.ts` (`createApp`/`startWebServer`, same-origin
+  guard, htmx and stylesheet assets), `templates/*.html` (the markup), and
+  `style.css`. It drives the same `KnowledgeGraphManager` the MCP tools do: no
+  SQL, no schema, no types of its own. `web.ts` (root) is its bin,
+  `mcp-server-memory-web`.
 
 ## Commands
 
-- `npm run build` / `npx tsc` — compile to `dist/`
+- `npm run build` / `npx tsc` — compile to `dist/`, then copy the web assets
+  (`lib/web/templates/`, `lib/web/style.css`) into `dist/lib/web/`
 - `npm test` / `npx vitest run` — full test suite
 - `npm run watch` — `tsc --watch`
 - `npm run web` — build and serve the web UI on `127.0.0.1:3939` (`PORT`,
@@ -152,12 +155,20 @@ through the triggers.
 - The web UI answers every mutation with **200**, even when the manager rejected
   the write: htmx only swaps 2xx bodies, so a failure travels as a banner inside
   the re-rendered panel. The `error.message` in it is the manager's, verbatim.
-- Entity names reach the panels through query strings and hidden form fields, so
-  every interpolation must go through `escapeHtml` (`encodeURIComponent` in a
-  URL); `nodePanel` compares names **exactly**, so routes canonicalize a name via
+- Entity names reach the panels through query strings and hidden form fields.
+  The templates escape every `<%= %>` value (Eta escapes `& < > " '`, the same
+  set the old `escapeHtml` did) and use `encodeURIComponent` explicitly inside a
+  URL; `<%~ %>` is raw and reserved for composing an already-rendered fragment.
+  `nodePanel` compares names **exactly**, so routes canonicalize a name via
   the `openNodes` result first — a case-variant request would otherwise render
   the not-found view, whose create form the NOCASE identity rejects as a
   duplicate.
+- Templates and `style.css` are read from disk relative to `import.meta.url`,
+  so the `build` script's asset copy into `dist/lib/web/` is what makes the
+  published package work. A build that skips it fails on the first render (`npx
+  tsc` alone is not a deployable build). `templates.ts` sets Eta's `cache: true`:
+  templates are static for the life of the process, so editing one on a running
+  server still needs a restart.
 - The web UI is loopback-only and unauthenticated. It answers loopback `Host`
   headers only (that is what closes DNS rebinding — an Origin check alone is
   defeated by a page that rebinds a domain it controls to 127.0.0.1, since that

@@ -1,0 +1,10 @@
+<section class="panel">
+<h2><%= it.entities.length %> entities</h2>
+<% if (it.entities.length === 0) { %>
+<p class="muted">No entities yet.</p>
+<% } else { %>
+<ul>
+<% it.entities.forEach((entity) => { %><%~ include("./entity-row", { entity }) %><% }) %>
+</ul>
+<% } %>
+</section>
