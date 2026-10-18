@@ -21,7 +21,9 @@
     </header>
     <div class="layout">
       <nav id="index" hx-get="/entities" hx-trigger="load, graph-changed from:body" hx-target="this" hx-swap="innerHTML"></nav>
-      <main id="node" hx-on::after-swap="this.scrollTop = 0"><% if (it.node.trim() === "") { %><p class="muted">Select an entity or search to begin.</p><% } else { %><%~ it.node %><% } %></main>
+      <main id="node" hx-on::after-swap="this.scrollTop = 0">
+        <p class="muted">Select an entity or search to begin.</p>
+      </main>
     </div>
   </body>
 </html>

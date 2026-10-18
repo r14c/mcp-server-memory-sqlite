@@ -9,7 +9,8 @@ export const webDir = fileURLToPath(new URL(".", import.meta.url));
 export const templatesDir = path.join(webDir, "templates");
 
 // `<%= %>` is escaped (the same five characters the old escapeHtml covered) and
-// `<%~ %>` is raw; raw is used only to compose an already-rendered fragment.
+// `<%~ %>` is raw; raw is used only for include(), i.e. to place an
+// already-rendered template, never to interpolate a value.
 // Templates are static, so compiled ones are cached for the process lifetime.
 const eta = new Eta({ views: templatesDir, defaultExtension: ".html", cache: true });
 

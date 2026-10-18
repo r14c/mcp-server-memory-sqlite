@@ -158,7 +158,8 @@ through the triggers.
 - Entity names reach the panels through query strings and hidden form fields.
   The templates escape every `<%= %>` value (Eta escapes `& < > " '`, the same
   set the old `escapeHtml` did) and use `encodeURIComponent` explicitly inside a
-  URL; `<%~ %>` is raw and reserved for composing an already-rendered fragment.
+  URL; `<%~ %>` is raw and used only to place an `include()`d template, never
+  to interpolate a value.
   `nodePanel` compares names **exactly**, so routes canonicalize a name via
   the `openNodes` result first — a case-variant request would otherwise render
   the not-found view, whose create form the NOCASE identity rejects as a

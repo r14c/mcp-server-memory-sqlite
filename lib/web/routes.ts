@@ -77,9 +77,9 @@ export function createRouter(manager: KnowledgeGraphManager): Router {
   const router = new Router();
 
   router.get("/", (ctx) => {
-    // No initial node content: the shell renders its own placeholder, and the
-    // index pane fills itself from its hx-trigger="load" listener.
-    renderHtml(ctx, render("page", { node: "" }));
+    // The shell renders its starting placeholder; the index pane fills itself
+    // from its hx-trigger="load" listener.
+    renderHtml(ctx, render("page", {}));
   });
 
   router.get("/search", async (ctx) => {
