@@ -7,22 +7,22 @@
     <link rel="stylesheet" href="/static/style.css" />
     <script src="/static/htmx.min.js"></script>
   </head>
-  <body hx-target="#node" hx-swap="innerHTML">
-    <header>
-      <h1>memory kg</h1>
-      <form hx-get="/search" hx-target="#index" hx-swap="innerHTML" hx-trigger="submit, keyup changed delay:300ms">
-        <input type="search" name="q" placeholder="search" autocomplete="off" />
+  <body class="app" hx-target="#node" hx-swap="innerHTML">
+    <header class="app__header">
+      <h1 class="app__title">memory kg</h1>
+      <form class="controls" hx-get="/search" hx-target="#index" hx-swap="innerHTML" hx-trigger="submit, keyup changed delay:300ms">
+        <input class="field" type="search" name="q" placeholder="search" autocomplete="off" />
       </form>
-      <form hx-post="/entities">
-        <input name="name" placeholder="name" autocomplete="off" />
-        <input name="entityType" placeholder="entity type" autocomplete="off" />
-        <button type="submit">create</button>
+      <form class="controls" hx-post="/entities">
+        <input class="field" name="name" placeholder="name" autocomplete="off" />
+        <input class="field" name="entityType" placeholder="entity type" autocomplete="off" />
+        <button class="button" type="submit">create</button>
       </form>
     </header>
-    <div class="layout">
-      <nav id="index" hx-get="/entities" hx-trigger="load, graph-changed from:body" hx-target="this" hx-swap="innerHTML"></nav>
-      <main id="node" hx-on::after-swap="this.scrollTop = 0">
-        <p class="muted">Select an entity or search to begin.</p>
+    <div class="app__layout">
+      <nav id="index" class="app__pane" hx-get="/entities" hx-trigger="load, graph-changed from:body" hx-target="this" hx-swap="innerHTML"></nav>
+      <main id="node" class="app__pane" hx-on::after-swap="this.scrollTop = 0">
+        <p class="empty-state">Select an entity or search to begin.</p>
       </main>
     </div>
   </body>

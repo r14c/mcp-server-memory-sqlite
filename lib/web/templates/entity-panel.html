@@ -1,8 +1,8 @@
-<section class="panel">
-<h2><%= it.entity.name %> <span class="badge"><%= it.entity.entityType %></span></h2>
-<form class="inline" hx-post="/entities/delete" hx-confirm="Delete <%= it.entity.name %> and all its relations?">
+<section class="entity">
+<h2 class="entity__title"><%= it.entity.name %> <span class="badge"><%= it.entity.entityType %></span></h2>
+<form class="controls controls--inline" hx-post="/entities/delete" hx-confirm="Delete <%= it.entity.name %> and all its relations?">
   <input type="hidden" name="entityName" value="<%= it.entity.name %>">
-  <button class="danger" type="submit">delete entity</button>
+  <button class="button button--danger" type="submit">delete entity</button>
 </form>
 <%~ include("./observations", { entity: it.entity }) %>
 <%~ include("./relations", { entityName: it.entity.name, relations: it.relations, entityNames: it.entityNames, relationTypes: it.relationTypes }) %>

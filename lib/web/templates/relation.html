@@ -1,10 +1,10 @@
-<li>
-<%~ include("./entity-button", { name: it.relation.from }) %> → <em><%= it.relation.relationType %></em> → <%~ include("./entity-button", { name: it.relation.to }) %>
-<form class="inline" hx-post="/relations/delete" hx-confirm="Delete the relation <%= it.relation.from %> → <%= it.relation.to %>?">
+<li class="relations__item">
+<%~ include("./entity-button", { name: it.relation.from, className: "button" }) %> → <em><%= it.relation.relationType %></em> → <%~ include("./entity-button", { name: it.relation.to, className: "button" }) %>
+<form class="controls controls--inline" hx-post="/relations/delete" hx-confirm="Delete the relation <%= it.relation.from %> → <%= it.relation.to %>?">
   <input type="hidden" name="from" value="<%= it.relation.from %>">
   <input type="hidden" name="to" value="<%= it.relation.to %>">
   <input type="hidden" name="relationType" value="<%= it.relation.relationType %>">
   <input type="hidden" name="view" value="<%= it.view %>">
-  <button class="danger" type="submit">delete</button>
+  <button class="button button--danger" type="submit">delete</button>
 </form>
 </li>

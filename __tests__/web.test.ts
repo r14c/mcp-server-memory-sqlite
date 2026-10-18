@@ -130,7 +130,7 @@ describe("web app", () => {
     expect(shortResponse.status).toBe(200);
     const short = await shortResponse.text();
     expect(short).toMatch(/matches/);
-    expect(short).not.toContain('class="error"');
+    expect(short).not.toMatch(/class="[^"]*error[^"]*"/);
 
     // An empty or whitespace-only query falls back to the index panel.
     const empty = await (await get("/search?q=")).text();
@@ -222,10 +222,10 @@ describe("web app", () => {
     ]);
 
     const html = await (await get(`/entity?name=Alice`)).text();
-    expect(html).toContain(
-      '<textarea name="replacement" rows="2">works at &lt;Acme&gt;</textarea>',
-    );
-    expect(html).toContain('<textarea name="replacement" rows="2">second fact</textarea>');
+    // The textarea carries the class hook; what matters is that it holds the
+    // observation text rather than rendering a separate static copy.
+    expect(html).toMatch(/<textarea[^>]*name="replacement"[^>]*>works at &lt;Acme&gt;<\/textarea>/);
+    expect(html).toMatch(/<textarea[^>]*name="replacement"[^>]*>second fact<\/textarea>/);
     // The text is the box, not a static copy next to it.
     expect(html).not.toContain("<span>works at");
   });
@@ -342,8 +342,8 @@ describe("web app", () => {
     expect(deleted.status).toBe(200);
 
     const html = await deleted.text();
-    expect(html).toContain("<h2>Team");
-    expect(html).not.toContain("<h2>Alice");
+    expect(html).toContain('<h2 class="entity__title">Team');
+    expect(html).not.toContain('<h2 class="entity__title">Alice');
     expect((await manager.readGraph()).relations).toEqual([]);
   });
 
@@ -449,6 +449,6 @@ describe("web app", () => {
     const response = await get("/static/style.css");
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type") ?? "").toContain("css");
-    expect(await response.text()).toContain(".layout");
+    expect(await response.text()).toContain("--background");
   });
 });

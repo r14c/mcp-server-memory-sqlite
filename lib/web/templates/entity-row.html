@@ -1,1 +1,4 @@
-<li><%~ include("./entity-button", { name: it.entity.name }) %> <span class="badge"><%= it.entity.entityType %></span></li>
+<li class="entity-list__item">
+<%~ include("./entity-button", { name: it.entity.name, className: "button entity-list__button" }) %>
+<span class="badge"><%= it.entity.entityType %></span>
+</li>

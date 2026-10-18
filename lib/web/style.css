@@ -1,62 +1,62 @@
+/* Theme ------------------------------------------------------------------ */
+
+/* Rabbits theme palette, from r14c/profile public/themes/web.svg. The variable
+   names are the ones the theme format uses, so any other theme's SVG values can
+   be dropped in here. "web" is a light theme. */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
+  --background: #ffffff;
+  --f_high: #000000;
+  --f_med: #551A8B;
+  --f_low: #0000EE;
+  --f_inv: #FFFFFF;
+  --b_high: #bfbfbf;
+  --b_med: #eeeeee;
+  --b_low: #efefef;
+  --b_inv: #000000;
+  /* Not in the theme file: classic web-safe accents layered over the palette.
+     #cc0000 is the web-safe red (pure #ff0000 is too light to read as text);
+     #008000 is the HTML named green. CSS "lavender" fills the type badge. */
+  --error: #cc0000;
+  --notice: #008000;
+  --badge-fill: #e6e6fa;
+  height: 100%;
 }
+
+/* Base ------------------------------------------------------------------- */
+
 * {
   box-sizing: border-box;
 }
-html,
-body {
+
+/* App shell -------------------------------------------------------------- */
+
+.app {
   height: 100%;
-}
-body {
   margin: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  background-color: var(--background);
+  color: var(--f_high);
   font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
   line-height: 1.45;
 }
-header {
+.app__header {
   flex: none;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 1rem;
   padding: 0.75rem 1rem;
-  border-bottom: 1px solid #d0d0d0;
+  background-color: var(--b_low);
+  border-bottom: 1px solid var(--b_high);
 }
-h1 {
+.app__title {
   margin: 0;
   font-size: 1.1rem;
 }
-h2 {
-  font-size: 1rem;
-  margin: 0 0 0.5rem;
-}
-h3 {
-  font-size: 0.9rem;
-  margin: 1rem 0 0.25rem;
-}
-form {
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  margin: 0;
-}
-input,
-textarea,
-button {
-  font: inherit;
-  padding: 0.25rem 0.4rem;
-}
-textarea {
-  flex: 1 1 auto;
-  resize: vertical;
-}
-button {
-  cursor: pointer;
-}
-.layout {
+.app__layout {
   flex: 1 1 auto;
   display: grid;
   grid-template-columns: minmax(14rem, 22rem) 1fr;
@@ -67,56 +67,154 @@ button {
 /* Each pane is its own scroll container, so a long entity list and a long
    observation list scroll without moving each other. min-height: 0 is what
    lets a grid item shrink to the row and scroll instead of growing the page. */
-nav,
-main {
+.app__pane {
   min-height: 0;
   overflow: auto;
   padding: 0.75rem;
-  border: 1px solid #d0d0d0;
+  background-color: var(--background);
+  border: 1px solid var(--b_high);
   border-radius: 6px;
 }
-ul {
+
+/* Controls --------------------------------------------------------------- */
+
+/* A `.controls` row is the unit of composition for forms across the app. */
+.controls {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+}
+.controls--inline {
+  display: inline-flex;
+}
+.field,
+.button {
+  font: inherit;
+  padding: 0.25rem 0.4rem;
+  color: var(--f_high);
+  background-color: var(--background);
+  border: 1px solid var(--b_inv);
+}
+.field--multiline {
+  resize: vertical;
+}
+.field:focus-visible,
+.button:focus-visible {
+  outline: 2px solid var(--f_low);
+  outline-offset: 1px;
+}
+.button {
+  cursor: pointer;
+  background-color: var(--b_low);
+}
+.button:hover {
+  border-color: var(--f_low);
+}
+.button:active {
+  background-color: var(--b_med);
+  border-color: var(--f_med);
+}
+.button--danger {
+  color: var(--error);
+}
+
+/* Badges and messages ---------------------------------------------------- */
+
+.badge {
+  padding: 0 0.4rem;
+  border: 1px solid var(--f_med);
+  border-radius: 999px;
+  background-color: var(--badge-fill);
+  color: var(--f_med);
+  font-size: 0.75em;
+  font-weight: normal;
+}
+.banner--error {
+  color: var(--error);
+  font-weight: bold;
+}
+.banner--notice {
+  color: var(--notice);
+}
+.empty-state {
+  color: var(--f_med);
+  font-size: 0.9em;
+}
+
+/* Entity list ------------------------------------------------------------ */
+
+.entity-list__title {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
+}
+.entity-list__items {
   margin: 0;
   padding: 0;
   list-style: none;
 }
-li {
+/* The entity is a full-width target with its type underneath, so every row has
+   the same clickable shape regardless of the name's length. */
+.entity-list__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.2rem;
   padding: 0.25rem 0;
-  border-bottom: 1px solid #eee;
+  border-bottom: 1px solid var(--b_med);
 }
-.muted {
-  color: #6a6a6a;
-  font-size: 0.9em;
+.entity-list__button {
+  width: 100%;
+  text-align: left;
 }
-.error {
-  color: #b00020;
+
+/* Entity detail ---------------------------------------------------------- */
+
+.entity__title {
+  font-size: 1rem;
+  margin: 0 0 0.5rem;
 }
-.notice {
-  color: #0a7d32;
+
+/* Observations ----------------------------------------------------------- */
+
+.observations__title {
+  font-size: 0.9rem;
+  margin: 1rem 0 0.25rem;
 }
-.badge {
-  padding: 0 0.4rem;
-  border: 1px solid #bbb;
-  border-radius: 999px;
-  color: #555;
-  font-size: 0.75em;
-  font-weight: normal;
+.observations__items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
-.danger {
-  color: #b00020;
-}
-.inline {
-  display: inline-flex;
-  gap: 0.4rem;
-}
-/* The textbox is the observation, so its form is the flexible item and the
-   save/delete buttons sit at the top of the box rather than centred against it. */
-.observation {
+.observations__item {
   display: flex;
   align-items: flex-start;
   gap: 0.4rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--b_med);
 }
-.observation > form:first-of-type {
+/* The textbox is the observation, so its form is the flexible item and the
+   save/delete buttons sit at the top of the box rather than centred against it. */
+.observations__edit {
   flex: 1 1 auto;
   align-items: flex-start;
+}
+.observations__textarea {
+  flex: 1 1 auto;
+}
+
+/* Relations -------------------------------------------------------------- */
+
+.relations__title {
+  font-size: 0.9rem;
+  margin: 1rem 0 0.25rem;
+}
+.relations__items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.relations__item {
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--b_med);
 }

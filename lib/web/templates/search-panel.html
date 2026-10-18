@@ -1,9 +1,9 @@
-<section class="panel">
-<h2><%= it.entities.length %> matches for “<%= it.query %>”</h2>
+<section class="entity-list">
+<h2 class="entity-list__title"><%= it.entities.length %> matches for “<%= it.query %>”</h2>
 <% if (it.entities.length === 0) { %>
-<p class="muted">No matches.</p>
+<p class="empty-state">No matches.</p>
 <% } else { %>
-<ul>
+<ul class="entity-list__items">
 <% it.entities.forEach((entity) => { %><%~ include("./entity-row", { entity }) %><% }) %>
 </ul>
 <% } %>

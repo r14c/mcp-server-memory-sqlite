@@ -89,8 +89,9 @@ through the triggers.
   paths), `fragments.ts` (view models → rendered panels), `routes.ts`
   (`@koa/router` table), `server.ts` (`createApp`/`startWebServer`, same-origin
   guard, htmx and stylesheet assets), `templates/*.html` (the markup), and
-  `style.css`. It drives the same `KnowledgeGraphManager` the MCP tools do: no
-  SQL, no schema, no types of its own. `web.ts` (root) is its bin,
+  `style.css` (BEM classes — style through classes, never element selectors).
+  It drives the same `KnowledgeGraphManager` the MCP tools do: no SQL, no
+  schema, no types of its own. `web.ts` (root) is its bin,
   `mcp-server-memory-web`.
 
 ## Commands

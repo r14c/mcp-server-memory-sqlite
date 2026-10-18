@@ -1,13 +1,13 @@
-<li class="observation">
-<form hx-post="/observations/update">
+<li class="observations__item">
+<form class="controls observations__edit" hx-post="/observations/update">
   <input type="hidden" name="entityName" value="<%= it.entityName %>">
   <input type="hidden" name="match" value="<%= it.observation %>">
-  <textarea name="replacement" rows="2"><%= it.observation %></textarea>
-  <button type="submit">save</button>
+  <textarea class="field field--multiline observations__textarea" name="replacement" rows="4"><%= it.observation %></textarea>
+  <button class="button" type="submit">save</button>
 </form>
-<form hx-post="/observations/delete" hx-confirm="Delete this observation from <%= it.entityName %>?">
+<form class="controls controls--inline" hx-post="/observations/delete" hx-confirm="Delete this observation from <%= it.entityName %>?">
   <input type="hidden" name="entityName" value="<%= it.entityName %>">
   <input type="hidden" name="content" value="<%= it.observation %>">
-  <button class="danger" type="submit">delete</button>
+  <button class="button button--danger" type="submit">delete</button>
 </form>
 </li>
