@@ -1,6 +1,6 @@
 {
   "name": "mcp-server-memory-sqlite",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "description": "MCP server for enabling memory for AI assistants through a knowledge graph",
   "homepage": "https://github.com/r14c/mcp-server-memory-sqlite/",
   "license": "Apache-2.0",
